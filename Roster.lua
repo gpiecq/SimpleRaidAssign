@@ -1,5 +1,5 @@
 ----------------------------------------------------------------------
--- WowShiftAssign  -  Roster.lua
+-- SimpleRaidAssign  -  Roster.lua
 -- Discovers raid/party composition (name, class, role hint, online state)
 -- Fires ROSTER_UPDATED whenever the group changes.
 ----------------------------------------------------------------------
@@ -191,12 +191,19 @@ end
 -- Event frame
 ----------------------------------------------------------------------
 local frame = CreateFrame("Frame")
--- GROUP_ROSTER_UPDATE replaces RAID_ROSTER_UPDATE/PARTY_MEMBERS_CHANGED
--- on newer clients but TBC also fires the legacy events; register both.
-frame:RegisterEvent("GROUP_ROSTER_UPDATE")
-frame:RegisterEvent("RAID_ROSTER_UPDATE")
-frame:RegisterEvent("PARTY_MEMBERS_CHANGED")
-frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+-- GROUP_ROSTER_UPDATE replaces the legacy RAID_ROSTER_UPDATE /
+-- PARTY_MEMBERS_CHANGED events on modern clients. TBC Anniversary
+-- only accepts the new one; wrap in pcall so older clients that
+-- still have the legacy events can also register them without
+-- erroring out on the new one.
+local function SafeRegister(ev)
+    pcall(function() frame:RegisterEvent(ev) end)
+end
+
+SafeRegister("GROUP_ROSTER_UPDATE")
+SafeRegister("RAID_ROSTER_UPDATE")
+SafeRegister("PARTY_MEMBERS_CHANGED")
+SafeRegister("PLAYER_ENTERING_WORLD")
 
 local pending = false
 local function ScheduleScan()

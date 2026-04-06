@@ -1,5 +1,5 @@
 # Build artifacts
-WowShiftAssign.zip
+SimpleRaidAssign.zip
 build/
 
 # IDE / editor
@@ -13,3 +13,6 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local screenshot dump for bug reports
+bugs/

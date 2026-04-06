@@ -1,0 +1,17 @@
+## Interface: 20504
+## Title: SimpleRaidAssign
+## Notes: Raid role assignments with shareable raid plans: marker + players + context per boss
+## Author: SimpleRaidAssign
+## Version: 1.0.0
+## SavedVariables: SimpleRaidAssignDB
+## SavedVariablesPerCharacter: SimpleRaidAssignCharDB
+
+Core.lua
+AssignData.lua
+TBCBosses.lua
+Roster.lua
+Raids.lua
+Attributions.lua
+Broadcast.lua
+Comms.lua
+UI.lua

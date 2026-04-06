@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-ADDON_NAME="WowShiftAssign"
+ADDON_NAME="SimpleRaidAssign"
 TOC_FILE="${ADDON_NAME}.toc"
 
 if [ ! -f "$TOC_FILE" ]; then
@@ -23,8 +23,11 @@ mkdir -p "build/$ADDON_NAME"
 cp "$TOC_FILE" \
    Core.lua \
    AssignData.lua \
+   TBCBosses.lua \
    Roster.lua \
-   Assignments.lua \
+   Raids.lua \
+   Attributions.lua \
+   Broadcast.lua \
    Comms.lua \
    UI.lua \
    "build/$ADDON_NAME/"
