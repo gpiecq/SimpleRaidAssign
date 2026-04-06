@@ -1,0 +1,15 @@
+# Build artifacts
+WowShiftAssign.zip
+build/
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+
+# Claude Code local config
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
