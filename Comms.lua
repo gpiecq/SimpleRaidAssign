@@ -1,18 +1,17 @@
 ----------------------------------------------------------------------
--- WowShiftAssign  -  Comms.lua
--- Addon-message synchronization layer.
--- Protocol (versioned): WSA1\tCMD\t<args...>
---   PUSH <encKey>\t<serializedTable>
---   REQ                          (broadcast: anyone with newer data may PUSH)
---   PING <version>
+-- SimpleRaidAssign  -  Comms.lua
+-- Addon-message synchronization layer, operating on whole raids.
+-- Protocol (versioned): SRA1\tCMD\t<args...>
+--   PUSH <raidKey>\t<serializedRaidTable>
+--   REQ                            (broadcast: anyone with newer data may PUSH)
 ----------------------------------------------------------------------
 local _, NS = ...
 
 local Comms = {}
 NS.Comms = Comms
 
-local PREFIX     = "WSA1"
-local PROTO_VER  = 1
+local PREFIX    = "SRA1"
+local PROTO_VER = 2
 
 ----------------------------------------------------------------------
 -- Compat: SendAddonMessage / RegisterAddonMessagePrefix can live in
@@ -22,10 +21,9 @@ local SendAddonMessageFn = (C_ChatInfo and C_ChatInfo.SendAddonMessage) or SendA
 local RegisterPrefixFn   = (C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix) or RegisterAddonMessagePrefix
 
 ----------------------------------------------------------------------
--- Tiny serializer (table -> string, string -> table)
--- Avoids depending on AceSerializer; supports strings, numbers, bools,
--- nested tables. Encodes tab/newline/backslash so they can survive the
--- chat protocol.
+-- Tiny self-contained serializer (no Ace3 dependency).
+-- Encodes strings, numbers, booleans, and nested tables; escapes
+-- characters that would collide with the chat protocol.
 ----------------------------------------------------------------------
 local function Escape(s)
     return (s:gsub("\\", "\\\\"):gsub("\t", "\\t"):gsub("\n", "\\n"):gsub("|", "\\p"))
@@ -56,7 +54,6 @@ local function Encode(value)
     return "N"
 end
 
--- Recursive descent decoder
 local Decode
 local function DecodeAt(s, i)
     local c = s:sub(i, i)
@@ -67,14 +64,11 @@ local function DecodeAt(s, i)
     elseif c == "F" then
         return false, i + 1
     elseif c == "n" then
-        -- "n:<digits>"
         local j = s:find("[;=}]", i + 2) or (#s + 1)
-        local num = tonumber(s:sub(i + 2, j - 1))
-        return num, j
+        return tonumber(s:sub(i + 2, j - 1)), j
     elseif c == "s" then
         local j = s:find("[;=}]", i + 2) or (#s + 1)
-        local str = Unescape(s:sub(i + 2, j - 1))
-        return str, j
+        return Unescape(s:sub(i + 2, j - 1)), j
     elseif c == "{" then
         local out = {}
         local j = i + 1
@@ -121,18 +115,18 @@ local function Send(payload, channel, target)
     return true
 end
 
-function Comms:PushEncounter(encounterKey, channel, target)
-    if not NS.Assignments then return end
-    local enc = NS.Assignments:ExportEncounter(encounterKey)
-    if not enc then return end
-    local body = string.format("PUSH\t%s\t%s", encounterKey, Encode(enc))
+function Comms:PushRaid(raidKey, channel, target)
+    if not NS.Raids then return end
+    local raid = NS.Raids:Get(raidKey)
+    if not raid then return end
+    local body = string.format("PUSH\t%s\t%s", raidKey, Encode(raid))
     Send(body, channel, target)
 end
 
 function Comms:BroadcastAll()
-    if not NS.db or not NS.db.encounters then return end
-    for key in pairs(NS.db.encounters) do
-        self:PushEncounter(key)
+    if not NS.db or not NS.db.raids then return end
+    for key in pairs(NS.db.raids) do
+        self:PushRaid(key)
     end
 end
 
@@ -141,11 +135,31 @@ function Comms:RequestSync()
 end
 
 ----------------------------------------------------------------------
+-- Apply an incoming raid payload (last-write-wins based on updatedAt)
+----------------------------------------------------------------------
+local function ApplyIncomingRaid(raidKey, payload, sender)
+    if not NS.db or not NS.db.settings.acceptIncoming then return end
+    if type(payload) ~= "table" then return end
+
+    local existing = NS.db.raids[raidKey]
+    if existing and (existing.updatedAt or 0) >= (payload.updatedAt or 0) then
+        return -- our copy is newer or equal
+    end
+
+    NS.db.raids[raidKey] = payload
+    NS:FireCallback("DATA_UPDATED")
+    NS:FireCallback("RAID_REPLACED", raidKey)
+
+    if NS.db.settings.notifyOnSync then
+        NS:Print(string.format("Synced |cffffff00%s|r from %s", payload.name or raidKey, sender or "?"))
+    end
+end
+
+----------------------------------------------------------------------
 -- Inbound handler
 ----------------------------------------------------------------------
 local function HandleMessage(text, sender)
     if not text or text == "" then return end
-    -- Drop our own echoes
     local me = UnitName("player")
     if sender == me or sender == (me .. "-" .. (GetRealmName() or "")) then return end
 
@@ -155,22 +169,8 @@ local function HandleMessage(text, sender)
     if cmd == "PUSH" then
         local key, body = rest:match("^([^\t]+)\t(.*)$")
         if not key or not body then return end
-        if not NS.db or not NS.db.settings.acceptIncoming then return end
-
-        local enc = Decode(body)
-        if type(enc) ~= "table" then return end
-
-        local existing = NS.db.encounters[key]
-        if existing and (existing.updated or 0) >= (enc.updated or 0) then
-            return -- our copy is newer or equal
-        end
-
-        if NS.Assignments then
-            NS.Assignments:ReplaceEncounter(key, enc)
-        end
-        if NS.db.settings.notifyOnSync then
-            NS:Print(string.format("Synced |cffffff00%s|r from %s", enc.name or key, sender or "?"))
-        end
+        local payload = Decode(body)
+        ApplyIncomingRaid(key, payload, sender)
 
     elseif cmd == "REQ" then
         if NS.db and NS.db.settings.autoBroadcast then
@@ -182,9 +182,9 @@ end
 ----------------------------------------------------------------------
 -- Auto-broadcast on local edits
 ----------------------------------------------------------------------
-local function MaybeAutoBroadcast(_, encounterKey)
-    if NS.db and NS.db.settings.autoBroadcast and encounterKey then
-        Comms:PushEncounter(encounterKey)
+local function MaybeAutoBroadcast(_, raidKey)
+    if NS.db and NS.db.settings.autoBroadcast and raidKey then
+        Comms:PushRaid(raidKey)
     end
 end
 
@@ -208,12 +208,13 @@ end)
 
 NS:RegisterCallback("SYNC_PUSH_REQUEST", function()
     Comms:BroadcastAll()
-    NS:Print("Pushed all encounters to the group.")
+    NS:Print("Pushed all raids to the group.")
 end)
 
 NS:RegisterCallback("SYNC_PULL_REQUEST", function()
     Comms:RequestSync()
-    NS:Print("Requested encounter sync from the group.")
+    NS:Print("Requested raid sync from the group.")
 end)
 
-NS:RegisterCallback("ENCOUNTER_CREATED", MaybeAutoBroadcast)
+NS:RegisterCallback("RAID_CREATED", MaybeAutoBroadcast)
+NS:RegisterCallback("RAID_UPDATED", MaybeAutoBroadcast)

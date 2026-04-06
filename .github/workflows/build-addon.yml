@@ -14,19 +14,22 @@ jobs:
       - name: Extract version from TOC
         id: version
         run: |
-          VERSION=$(grep "^## Version:" WowShiftAssign.toc | sed 's/## Version: //' | tr -d '\r')
+          VERSION=$(grep "^## Version:" SimpleRaidAssign.toc | sed 's/## Version: //' | tr -d '\r')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Prepare addon folder
         run: |
-          ADDON_NAME="WowShiftAssign"
+          ADDON_NAME="SimpleRaidAssign"
           mkdir -p "build/$ADDON_NAME"
 
-          cp WowShiftAssign.toc \
+          cp SimpleRaidAssign.toc \
              Core.lua \
              AssignData.lua \
+             TBCBosses.lua \
              Roster.lua \
-             Assignments.lua \
+             Raids.lua \
+             Attributions.lua \
+             Broadcast.lua \
              Comms.lua \
              UI.lua \
              "build/$ADDON_NAME/"
@@ -38,5 +41,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WowShiftAssign-v${{ steps.version.outputs.version }}-pr${{ github.event.pull_request.number }}
-          path: build/WowShiftAssign
+          name: SimpleRaidAssign-v${{ steps.version.outputs.version }}-pr${{ github.event.pull_request.number }}
+          path: build/SimpleRaidAssign

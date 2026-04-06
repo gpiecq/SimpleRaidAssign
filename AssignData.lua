@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------
--- WowShiftAssign  -  AssignData.lua
--- Static data: role types, class colors, TBC encounter templates
+-- SimpleRaidAssign  -  AssignData.lua
+-- Static reference data: class colors + 8 raid target marker icons.
 ----------------------------------------------------------------------
 local _, NS = ...
 
@@ -8,42 +8,41 @@ local Data = {}
 NS.Data = Data
 
 ----------------------------------------------------------------------
--- Built-in role types
--- Each role type has:
---   key       internal id (stable, used in DB)
---   label     display name
---   icon      texture path
---   color     {r, g, b}  (used by UI accents)
---   maxSlots  default slot count when creating a role from this type
+-- 8 raid target marker icons (Blizzard indices 1..8)
+-- Order matches the in-game marker menu.
 ----------------------------------------------------------------------
-Data.RoleTypes = {
-    { key = "tank",       label = "Tank",            icon = "Interface\\Icons\\Ability_Defend",                color = { 0.30, 0.55, 0.90 }, maxSlots = 2 },
-    { key = "mainheal",   label = "Main Heal",       icon = "Interface\\Icons\\Spell_Holy_Heal",               color = { 0.27, 1.00, 0.27 }, maxSlots = 2 },
-    { key = "tankheal",   label = "Tank Healer",     icon = "Interface\\Icons\\Spell_Holy_GreaterHeal",        color = { 0.45, 1.00, 0.55 }, maxSlots = 2 },
-    { key = "raidheal",   label = "Raid Healer",     icon = "Interface\\Icons\\Spell_Holy_PrayerOfHealing02",  color = { 0.45, 0.95, 0.85 }, maxSlots = 3 },
-    { key = "interrupt",  label = "Interrupt",       icon = "Interface\\Icons\\Spell_Frost_IceShock",          color = { 1.00, 0.50, 0.20 }, maxSlots = 3 },
-    { key = "decurse",    label = "Decurse",         icon = "Interface\\Icons\\Spell_Nature_RemoveCurse",      color = { 0.65, 0.30, 0.85 }, maxSlots = 3 },
-    { key = "dispel",     label = "Magic Dispel",    icon = "Interface\\Icons\\Spell_Holy_DispelMagic",        color = { 0.85, 0.65, 1.00 }, maxSlots = 3 },
-    { key = "tranq",      label = "Tranq Shot",      icon = "Interface\\Icons\\Spell_Nature_Drowsy",           color = { 0.55, 0.85, 0.40 }, maxSlots = 2 },
-    { key = "mc",         label = "Mind Control",    icon = "Interface\\Icons\\Spell_Shadow_ShadowWordDominate", color = { 0.85, 0.40, 0.85 }, maxSlots = 2 },
-    { key = "kite",       label = "Kite",            icon = "Interface\\Icons\\Ability_Hunter_RunningShot",    color = { 1.00, 0.85, 0.30 }, maxSlots = 2 },
-    { key = "carry",      label = "Carry / Pick-up", icon = "Interface\\Icons\\INV_Crate_02",                  color = { 0.95, 0.75, 0.40 }, maxSlots = 4 },
-    { key = "cooldown",   label = "Raid Cooldown",   icon = "Interface\\Icons\\Spell_Holy_DivineProtection",   color = { 1.00, 0.84, 0.00 }, maxSlots = 4 },
-    { key = "custom",     label = "Custom",          icon = "Interface\\Icons\\INV_Misc_QuestionMark",         color = { 0.70, 0.70, 0.70 }, maxSlots = 5 },
+Data.MarkerIcons = {
+    { id = 1, key = "star",     label = "Yellow Star",    token = "{rt1}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1", color = { 1.00, 0.92, 0.20 } },
+    { id = 2, key = "circle",   label = "Orange Circle",  token = "{rt2}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_2", color = { 1.00, 0.50, 0.15 } },
+    { id = 3, key = "diamond",  label = "Purple Diamond", token = "{rt3}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_3", color = { 0.80, 0.40, 1.00 } },
+    { id = 4, key = "triangle", label = "Green Triangle", token = "{rt4}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_4", color = { 0.30, 0.90, 0.30 } },
+    { id = 5, key = "moon",     label = "White Moon",     token = "{rt5}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_5", color = { 0.95, 0.95, 0.95 } },
+    { id = 6, key = "square",   label = "Blue Square",    token = "{rt6}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_6", color = { 0.20, 0.55, 1.00 } },
+    { id = 7, key = "cross",    label = "Red Cross",      token = "{rt7}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_7", color = { 0.95, 0.20, 0.20 } },
+    { id = 8, key = "skull",    label = "Grey Skull",     token = "{rt8}", texture = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_8", color = { 0.85, 0.85, 0.85 } },
 }
 
--- Build a key->entry index for fast lookups
-Data.RoleTypeIndex = {}
-for _, t in ipairs(Data.RoleTypes) do
-    Data.RoleTypeIndex[t.key] = t
+-- Index by id for fast lookup
+Data.MarkerIndex = {}
+for _, m in ipairs(Data.MarkerIcons) do
+    Data.MarkerIndex[m.id] = m
 end
 
-function Data:GetRoleType(key)
-    return self.RoleTypeIndex[key] or self.RoleTypeIndex.custom
+function Data:GetMarker(id)
+    if not id then return nil end
+    return self.MarkerIndex[id]
+end
+
+function Data:IterateMarkers()
+    local i = 0
+    return function()
+        i = i + 1
+        return self.MarkerIcons[i]
+    end
 end
 
 ----------------------------------------------------------------------
--- Class colors (TBC client constants, with fallback)
+-- Class colors (TBC client constants, with live fallback)
 ----------------------------------------------------------------------
 Data.ClassColors = {
     DEATHKNIGHT = { 0.77, 0.12, 0.23 },
@@ -60,7 +59,6 @@ Data.ClassColors = {
 
 function Data:GetClassColor(classFile)
     if not classFile then return 0.7, 0.7, 0.7 end
-    -- Prefer the live RAID_CLASS_COLORS table if available
     local rcc = RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
     if rcc then return rcc.r, rcc.g, rcc.b end
     local c = self.ClassColors[classFile]
@@ -68,65 +66,12 @@ function Data:GetClassColor(classFile)
     return 0.7, 0.7, 0.7
 end
 
-----------------------------------------------------------------------
--- Encounter templates
--- Used when the user clicks "New from template" so they don't have to
--- recreate common roles for each boss. Templates are merely seeds; the
--- user is free to add/remove roles after creation.
-----------------------------------------------------------------------
-Data.EncounterTemplates = {
-    {
-        key      = "ssc_vashj",
-        name     = "Lady Vashj",
-        instance = "Serpentshrine Cavern",
-        roles    = {
-            { roleType = "tank",      label = "Main Tank" },
-            { roleType = "tank",      label = "Strider Tank" },
-            { roleType = "tankheal",  label = "MT Healers" },
-            { roleType = "raidheal",  label = "Raid Healers" },
-            { roleType = "carry",     label = "Tainted Core Runners" },
-            { roleType = "kite",      label = "Tainted Elemental Kite" },
-            { roleType = "interrupt", label = "Strider Interrupts" },
-        },
-    },
-    {
-        key      = "tk_kael",
-        name     = "Kael'thas Sunstrider",
-        instance = "The Eye",
-        roles    = {
-            { roleType = "tank",     label = "Main Tank" },
-            { roleType = "tank",     label = "Weapon Tanks" },
-            { roleType = "tankheal", label = "MT Healers" },
-            { roleType = "raidheal", label = "Raid Healers" },
-            { roleType = "decurse",  label = "Decursers (P3)" },
-            { roleType = "dispel",   label = "Mind Control Dispels" },
-            { roleType = "interrupt",label = "Pyroblast Interrupts" },
-        },
-    },
-    {
-        key      = "bt_illidan",
-        name     = "Illidan Stormrage",
-        instance = "Black Temple",
-        roles    = {
-            { roleType = "tank",     label = "Main Tank" },
-            { roleType = "tank",     label = "Flame Tanks" },
-            { roleType = "tankheal", label = "MT Healers" },
-            { roleType = "raidheal", label = "Raid Healers" },
-            { roleType = "kite",     label = "Parasite Kite" },
-            { roleType = "cooldown", label = "Demon Form CDs" },
-        },
-    },
-    {
-        key      = "blank",
-        name     = "Blank Encounter",
-        instance = "Custom",
-        roles    = {},
-    },
-}
-
-function Data:GetTemplate(key)
-    for _, t in ipairs(self.EncounterTemplates) do
-        if t.key == key then return t end
+function Data:ColorizeName(name)
+    if not name or name == "" then return name or "" end
+    local m = NS.Roster and NS.Roster:GetMember(name)
+    if m and m.classFile then
+        local r, g, b = self:GetClassColor(m.classFile)
+        return string.format("|cff%02x%02x%02x%s|r", r * 255, g * 255, b * 255, name)
     end
-    return nil
+    return name
 end

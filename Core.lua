@@ -1,43 +1,54 @@
 ----------------------------------------------------------------------
--- WowShiftAssign  -  Core.lua
+-- SimpleRaidAssign  -  Core.lua
 -- Addon initialisation, SavedVariables defaults, event bus, slash cmds
 ----------------------------------------------------------------------
 local ADDON_NAME, NS = ...
-NS.version = "0.1.0"
+NS.version = "1.0.0"
 
 ----------------------------------------------------------------------
 -- Default saved-variables template (account-wide)
 ----------------------------------------------------------------------
 local DEFAULTS = {
-    -- Per-encounter assignment trees
-    -- encounters[encounterKey] = {
-    --     name      = "Lady Vashj",
-    --     instance  = "Serpentshrine Cavern",
-    --     roles     = {
-    --         [roleKey] = {
-    --             label   = "Tainted Core Carriers",
-    --             roleType = "carry",   -- key from AssignData
-    --             slots   = { "Playername", ... },
-    --             notes   = "...",
+    -- Top-level container: a "raid" is a named plan that groups multiple
+    -- boss encounters together (e.g. "SSC Tuesday Farm").
+    --
+    -- raids[raidKey] = {
+    --     name           = "SSC Tuesday Farm",
+    --     createdAt      = <timestamp>,
+    --     updatedAt      = <timestamp>,
+    --     createdBy      = "Playername",
+    --     updatedBy      = "Playername",
+    --     notes          = "",
+    --     encounters     = {
+    --         [encounterKey] = {
+    --             name         = "Lady Vashj",
+    --             instance     = "Serpentshrine Cavern",
+    --             attributions = {
+    --                 [attribId] = {
+    --                     marker  = nil | 1..8,  -- raid target icon index (optional)
+    --                     players = { "PlayerA", "PlayerB", ... },
+    --                     context = "Tanks" | "Kick phase 1" | ... (free text),
+    --                     note    = "multi-line free text for extra detail",
+    --                 },
+    --             },
+    --             order    = { attribId1, ... },  -- attribution display order
+    --             updated  = <timestamp>,
+    --             updatedBy = "Playername",
     --         },
-    --         ...
     --     },
-    --     order     = { roleKey1, roleKey2, ... },  -- display order
-    --     updated   = <timestamp>,
-    --     updatedBy = "Playername",
+    --     encounterOrder = { encKey1, encKey2, ... },  -- boss display order
     -- }
-    encounters = {},
-
-    -- User-defined templates re-usable across encounters
-    templates  = {},
+    raids = {},
 
     settings = {
-        autoBroadcast   = true,    -- push changes to raid automatically
-        acceptIncoming  = true,    -- accept incoming syncs
-        notifyOnSync    = true,    -- chat message when receiving updates
-        lastEncounter   = nil,     -- last encounter shown in the UI
-        windowPos       = { point = "CENTER", x = 0, y = 0 },
-        minimapPos      = 215,     -- angle on minimap edge
+        autoBroadcast    = true,      -- push changes to raid automatically
+        acceptIncoming   = true,      -- accept incoming syncs
+        notifyOnSync     = true,      -- chat message when receiving updates
+        lastRaid         = nil,       -- last raid shown in the UI
+        lastEncounter    = nil,       -- last boss selected within lastRaid
+        windowPos        = { point = "CENTER", x = 0, y = 0 },
+        minimapPos       = 215,       -- angle on minimap edge
+        announceChannel  = "RAID_WARNING", -- RAID / RAID_WARNING / PARTY / SAY / GUILD
     },
 }
 
@@ -93,7 +104,7 @@ end
 -- Pretty print helper
 ----------------------------------------------------------------------
 function NS:Print(msg)
-    print("|cff00ccffWowShiftAssign:|r " .. tostring(msg))
+    print("|cff00ccffSimpleRaidAssign:|r " .. tostring(msg))
 end
 
 ----------------------------------------------------------------------
@@ -107,21 +118,21 @@ frame:RegisterEvent("PLAYER_LOGOUT")
 frame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         -- Initialise / migrate account-wide saved variables
-        if not WowShiftAssignDB then
-            WowShiftAssignDB = DeepCopy(DEFAULTS)
+        if not SimpleRaidAssignDB then
+            SimpleRaidAssignDB = DeepCopy(DEFAULTS)
         else
-            MergeDefaults(WowShiftAssignDB, DEFAULTS)
+            MergeDefaults(SimpleRaidAssignDB, DEFAULTS)
         end
 
         -- Per-character saved variables
-        if not WowShiftAssignCharDB then
-            WowShiftAssignCharDB = DeepCopy(CHAR_DEFAULTS)
+        if not SimpleRaidAssignCharDB then
+            SimpleRaidAssignCharDB = DeepCopy(CHAR_DEFAULTS)
         else
-            MergeDefaults(WowShiftAssignCharDB, CHAR_DEFAULTS)
+            MergeDefaults(SimpleRaidAssignCharDB, CHAR_DEFAULTS)
         end
 
-        NS.db     = WowShiftAssignDB
-        NS.charDb = WowShiftAssignCharDB
+        NS.db     = SimpleRaidAssignDB
+        NS.charDb = SimpleRaidAssignCharDB
 
         NS:FireCallback("ADDON_LOADED")
         frame:UnregisterEvent("ADDON_LOADED")
@@ -135,12 +146,12 @@ frame:SetScript("OnEvent", function(_, event, arg1)
 end)
 
 ----------------------------------------------------------------------
--- Slash commands  /wsa  /shiftassign
+-- Slash commands  /sra  /simpleraidassign
 ----------------------------------------------------------------------
-SLASH_WOWSHIFTASSIGN1 = "/wsa"
-SLASH_WOWSHIFTASSIGN2 = "/shiftassign"
+SLASH_SIMPLERAIDASSIGN1 = "/sra"
+SLASH_SIMPLERAIDASSIGN2 = "/simpleraidassign"
 
-SlashCmdList["WOWSHIFTASSIGN"] = function(msg)
+SlashCmdList["SIMPLERAIDASSIGN"] = function(msg)
     msg = strtrim(msg or ""):lower()
 
     if msg == "" or msg == "show" or msg == "toggle" then
@@ -159,30 +170,30 @@ SlashCmdList["WOWSHIFTASSIGN"] = function(msg)
         NS:FireCallback("SYNC_PULL_REQUEST")
 
     elseif msg == "reset" then
-        StaticPopup_Show("WOWSHIFTASSIGN_RESET_ALL")
+        StaticPopup_Show("SIMPLERAIDASSIGN_RESET_ALL")
 
     else
         NS:Print("v" .. NS.version .. " commands:")
-        print("  /wsa            - toggle main window")
-        print("  /wsa settings   - open settings panel")
-        print("  /wsa sync       - broadcast assignments to the raid")
-        print("  /wsa request    - request assignments from the raid")
-        print("  /wsa reset      - wipe ALL data (confirm)")
+        print("  /sra            - toggle main window")
+        print("  /sra settings   - open settings panel")
+        print("  /sra sync       - broadcast assignments to the raid")
+        print("  /sra request    - request assignments from the raid")
+        print("  /sra reset      - wipe ALL data (confirm)")
     end
 end
 
 ----------------------------------------------------------------------
 -- Static popup for "reset all" confirmation
 ----------------------------------------------------------------------
-StaticPopupDialogs["WOWSHIFTASSIGN_RESET_ALL"] = {
-    text = "Reset ALL WowShiftAssign data?\nThis cannot be undone.",
+StaticPopupDialogs["SIMPLERAIDASSIGN_RESET_ALL"] = {
+    text = "Reset ALL SimpleRaidAssign data?\nThis cannot be undone.",
     button1 = "Yes, Reset",
     button2 = "Cancel",
     OnAccept = function()
         local pos = NS.db and NS.db.settings.minimapPos or 215
-        WowShiftAssignDB = DeepCopy(DEFAULTS)
-        WowShiftAssignDB.settings.minimapPos = pos
-        NS.db = WowShiftAssignDB
+        SimpleRaidAssignDB = DeepCopy(DEFAULTS)
+        SimpleRaidAssignDB.settings.minimapPos = pos
+        NS.db = SimpleRaidAssignDB
         NS:FireCallback("DATA_UPDATED")
         NS:Print("All data has been reset.")
     end,
