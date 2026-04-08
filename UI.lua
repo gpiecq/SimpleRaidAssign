@@ -129,6 +129,59 @@ local Refresh
 local ShowSummary, ShowEditor
 local SafeSetText, CommitPendingEdits
 
+----------------------------------------------------------------------
+-- Per-attribution announce-selection state.
+--
+-- Held in a module-local table (NOT persisted to the SavedVariables)
+-- so it resets between game sessions but is shared across the
+-- different bosses in the current session. Default state for any
+-- attribution id absent from the table is "selected" — only entries
+-- the user has explicitly UNCHECKED show up here.
+----------------------------------------------------------------------
+local deselectedAttribs = {}
+
+local function IsAttribSelected(attribId)
+    return not deselectedAttribs[attribId]
+end
+
+local function SetAttribSelected(attribId, selected)
+    if selected then
+        deselectedAttribs[attribId] = nil
+    else
+        deselectedAttribs[attribId] = true
+    end
+end
+
+local function AreAllAttribsSelected(raidKey, encounterKey)
+    if not NS.Attributions then return true end
+    local count = 0
+    for attribId in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
+        count = count + 1
+        if not IsAttribSelected(attribId) then return false end
+    end
+    return count > 0
+end
+
+local function SetAllAttribsSelected(raidKey, encounterKey, state)
+    if not NS.Attributions then return end
+    for attribId in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
+        SetAttribSelected(attribId, state)
+    end
+end
+
+local function BuildSelectedFilter(raidKey, encounterKey)
+    local filter = {}
+    local any = false
+    if not NS.Attributions then return filter, any end
+    for attribId in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
+        if IsAttribSelected(attribId) then
+            filter[attribId] = true
+            any = true
+        end
+    end
+    return filter, any
+end
+
 -- ====================================================================
 --  STATIC POPUPS
 -- ====================================================================
@@ -567,6 +620,28 @@ local function BuildEditorView(parent)
     attribHint:SetText("click an attribution to edit it on the right")
     attribHint:SetTextColor(unpack(COLOURS.dim))
 
+    -- Master "select all / none" checkbox above the attribution scroll
+    -- list. Stays visible regardless of scroll position because it
+    -- lives outside the scroll frame.
+    local masterCheck = CreateFrame("CheckButton", nil, attribPanel, "UICheckButtonTemplate")
+    masterCheck:SetSize(20, 20)
+    masterCheck:SetPoint("TOPLEFT", 6, -38)
+    masterCheck:SetScript("OnClick", function(self)
+        if not currentRaidKey or not currentEncounterKey then
+            self:SetChecked(false)
+            return
+        end
+        local newState = self:GetChecked() and true or false
+        SetAllAttribsSelected(currentRaidKey, currentEncounterKey, newState)
+        Refresh()
+    end)
+    attribPanel.masterCheck = masterCheck
+
+    local masterLabel = FS(attribPanel, 10)
+    masterLabel:SetPoint("LEFT", masterCheck, "RIGHT", 2, 0)
+    masterLabel:SetText("Select all / none")
+    masterLabel:SetTextColor(unpack(COLOURS.dim))
+
     local addAttribBtn = CreateFrame("Button", nil, attribPanel, "UIPanelButtonTemplate")
     addAttribBtn:SetSize(130, 20)
     addAttribBtn:SetPoint("BOTTOMLEFT", 8, 64)
@@ -626,7 +701,12 @@ local function BuildEditorView(parent)
         -- changes are lost to the announce.
         CommitPendingEdits()
         if NS.Broadcast and currentRaidKey and currentEncounterKey then
-            NS.Broadcast:Announce(currentRaidKey, currentEncounterKey, "EN")
+            local filter, any = BuildSelectedFilter(currentRaidKey, currentEncounterKey)
+            if not any then
+                NS:Print("No attributions selected to announce.")
+                return
+            end
+            NS.Broadcast:Announce(currentRaidKey, currentEncounterKey, "EN", nil, filter)
         end
     end)
 
@@ -637,13 +717,18 @@ local function BuildEditorView(parent)
     previewBtn:SetScript("OnClick", function()
         CommitPendingEdits()
         if NS.Broadcast and currentRaidKey and currentEncounterKey then
-            NS.Broadcast:Preview(currentRaidKey, currentEncounterKey, "EN")
+            local filter, any = BuildSelectedFilter(currentRaidKey, currentEncounterKey)
+            if not any then
+                NS:Print("No attributions selected to preview.")
+                return
+            end
+            NS.Broadcast:Preview(currentRaidKey, currentEncounterKey, filter)
         end
     end)
 
     -- Attribution scrolling list
     local attribScroll = CreateFrame("ScrollFrame", nil, attribPanel, "UIPanelScrollFrameTemplate")
-    attribScroll:SetPoint("TOPLEFT", 4, -40)
+    attribScroll:SetPoint("TOPLEFT", 4, -64)
     attribScroll:SetPoint("BOTTOMRIGHT", -24, 90)
     local attribContent = CreateFrame("Frame", nil, attribScroll)
     attribContent:SetSize(1, 1)
@@ -1336,15 +1421,23 @@ local function BuildAttribRow(parent)
     SkinFrame(row)
     row:SetHeight(48)
 
+    -- "Include in announce" checkbox on the far left.
+    row.selectCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.selectCheck:SetSize(20, 20)
+    row.selectCheck:SetPoint("LEFT", 4, 0)
+
     row.markerIcon = row:CreateTexture(nil, "ARTWORK")
     row.markerIcon:SetSize(22, 22)
-    row.markerIcon:SetPoint("LEFT", 8, 0)
+    row.markerIcon:SetPoint("LEFT", 30, 0)
 
     row.context = FS(row, 12)
-    row.context:SetPoint("TOPLEFT", 36, -6)
+    row.context:SetPoint("TOPLEFT", 56, -6)
+    row.context:SetPoint("TOPRIGHT", -6, -6)
+    row.context:SetJustifyH("LEFT")
+    row.context:SetWordWrap(false)
 
     row.players = FS(row, 10)
-    row.players:SetPoint("BOTTOMLEFT", 36, 6)
+    row.players:SetPoint("BOTTOMLEFT", 56, 6)
     row.players:SetPoint("BOTTOMRIGHT", -6, 6)
     row.players:SetJustifyH("LEFT")
     row.players:SetWordWrap(false)
@@ -1359,12 +1452,14 @@ local function RefreshAttribList()
 
     if not currentRaidKey or not currentEncounterKey then
         panel.header:SetText("Attributions")
+        if panel.masterCheck then panel.masterCheck:SetChecked(false) end
         return
     end
 
     local enc = NS.Attributions and NS.Attributions:GetEncounter(currentRaidKey, currentEncounterKey)
     if not enc then
         panel.header:SetText("Attributions")
+        if panel.masterCheck then panel.masterCheck:SetChecked(false) end
         return
     end
 
@@ -1411,6 +1506,20 @@ local function RefreshAttribList()
             if row.SetBackdropColor then row:SetBackdropColor(unpack(COLOURS.bg)) end
         end
 
+        -- Per-row "include in announce" checkbox state and handler.
+        -- The checkbox lives on the row but its OnClick consumes the
+        -- click, so toggling it does NOT also fire the row's OnClick
+        -- (which would change the currently-selected attribution).
+        row.selectCheck:SetChecked(IsAttribSelected(attribId))
+        local capturedId = attribId
+        row.selectCheck:SetScript("OnClick", function(self)
+            SetAttribSelected(capturedId, self:GetChecked() and true or false)
+            -- Refresh the master checkbox state without rebuilding rows
+            if panel.masterCheck then
+                panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
+            end
+        end)
+
         row:SetScript("OnClick", function()
             CommitPendingEdits()
             currentAttribKey = attribId
@@ -1424,6 +1533,12 @@ local function RefreshAttribList()
         y = y + 52
     end
     panel.content:SetHeight(math.max(1, y))
+
+    -- Sync the master checkbox: checked iff every attribution is
+    -- selected (and there is at least one).
+    if panel.masterCheck then
+        panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
+    end
 end
 
 ----------------------------------------------------------------------

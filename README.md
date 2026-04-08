@@ -1,10 +1,10 @@
 # SimpleRaidAssign
 
-A lightweight raid planning addon for **World of Warcraft: Burning Crusade Classic** (TBC 2.5.x, Interface `20504`).
+A lightweight raid planning addon for **World of Warcraft: Burning Crusade Classic** (TBC 2.5.x, Interface `20505`).
 
 Create named raid plans, add TBC bosses from a built-in dropdown, fill each boss with **attributions** (marker + players + context + free-text note), and broadcast them to the raid chat in one click — all without the weight of MRT/ERT.
 
-> **Status:** stable (`v1.0.0`). Core workflow, broadcast, raid sync, and import/export are functional. A settings panel and richer presets are on the roadmap.
+> **Status:** stable (`v1.1.0`). Core workflow, broadcast, raid sync, and import/export are functional. A settings panel and richer presets are on the roadmap.
 
 ---
 
@@ -174,7 +174,7 @@ Two GitHub Actions workflows ship with the repo:
 
 ## Compatibility
 
-- **WoW client:** Burning Crusade Classic 2.5.x (Interface `20504`).
+- **WoW client:** Burning Crusade Classic 2.5.x (Interface `20505`).
 - **Other addons:** ElvUI is optional but supported via `SetTemplate("Transparent")`.
 
 ---
