@@ -1,4 +1,4 @@
-## Interface: 20504
+## Interface: 20505
 ## Title: SimpleRaidAssign
 ## Notes: Raid role assignments with shareable raid plans: marker + players + context per boss
 ## Author: SimpleRaidAssign
