@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-08
+
+### Added
+
+#### Per-attribution announce filter
+- Each attribution row in the editor now has a **checkbox** on its left edge that controls whether the attribution is included in the next chat broadcast. The checkbox toggles independently of the row selection — clicking it does not change which attribution is loaded in the right edit panel.
+- A **master "Select all / none" checkbox** sits above the attribution scroll list. It is automatically synced with the row state (checked when every attribution is selected, unchecked otherwise) and a click flips the entire list between "all checked" and "all unchecked".
+- New attributions default to **selected**, so the announce flow stays one-click when you do not need filtering.
+- Selection state is held in a module-local table (`deselectedAttribs`) and is **not persisted to SavedVariables** — it resets between sessions on purpose, so a new login starts with everything selected.
+
+### Changed
+- **`Broadcast.lua`** API now accepts an optional `filter` parameter (a `{ [attribId] = true }` set) on `BuildSegments`, `BuildMessages`, `Announce` and `Preview`. When provided, only the listed attributions are included in the segments. When `nil`, the legacy "include everything" behavior is preserved.
+- **`Announce` / `Preview` button handlers** now build a filter from the current row checkboxes and pass it to `Broadcast`. If no attribution is currently selected, both buttons print `"No attributions selected to announce."` (resp. preview) and return early instead of sending an empty message.
+- The attribution scroll frame moved down ~24 px to make room for the master checkbox row above it; the rest of the panel layout (announce bar, edit panel, etc.) is unchanged.
+
 ## [1.0.0] - 2026-04-06
 
 First stable release. Brings the addon under its final name (`SimpleRaidAssign`), polishes the editor flow, ships import/export, adds the per-attribution note field, the player picker dropdown and the minimap button.
@@ -185,7 +200,8 @@ Initial scaffold of the addon, modeled after the NodeCounter modular architectur
 - GitHub Actions workflow `build-addon.yml` for automated builds on pull requests (uploads versioned artifact)
 - GitHub Actions workflow `release.yml` for automated GitHub Releases on merge to main, with idempotent tag check and changelog extraction for release notes
 
-[Unreleased]: https://github.com/gpiecq/SimpleRaidAssign/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/gpiecq/SimpleRaidAssign/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v1.1.0
 [1.0.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v1.0.0
 [0.2.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v0.2.0
 [0.1.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v0.1.0

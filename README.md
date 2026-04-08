@@ -4,7 +4,7 @@ A lightweight raid planning addon for **World of Warcraft: Burning Crusade Class
 
 Create named raid plans, add TBC bosses from a built-in dropdown, fill each boss with **attributions** (marker + players + context + free-text note), and broadcast them to the raid chat in one click — all without the weight of MRT/ERT.
 
-> **Status:** stable (`v1.0.0`). Core workflow, broadcast, raid sync, and import/export are functional. A settings panel and richer presets are on the roadmap.
+> **Status:** stable (`v1.1.0`). Core workflow, broadcast, raid sync, and import/export are functional. A settings panel and richer presets are on the roadmap.
 
 ---
 

@@ -121,12 +121,18 @@ end
 ----------------------------------------------------------------------
 -- Build the full list of segments for a boss, ordered as the user sees
 -- them in the UI (follows enc.order).
+--
+-- `filter` is an optional set { [attribId] = true }. When provided,
+-- only attributions whose id is present in the set are included. When
+-- nil, every attribution is included (legacy behavior).
 ----------------------------------------------------------------------
-function Broadcast:BuildSegments(raidKey, encounterKey)
+function Broadcast:BuildSegments(raidKey, encounterKey, filter)
     local segments = {}
     if not NS.Attributions then return segments end
-    for _, attrib in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
-        segments[#segments + 1] = FormatSegment(attrib)
+    for attribId, attrib in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
+        if not filter or filter[attribId] then
+            segments[#segments + 1] = FormatSegment(attrib)
+        end
     end
     return segments
 end
@@ -179,16 +185,18 @@ Broadcast.ChunkMessages = ChunkMessages   -- exposed for tests/debug
 
 ----------------------------------------------------------------------
 -- Build all chat-ready messages for a boss (always English).
--- The optional `language` argument is accepted for backwards
--- compatibility with older callers but is otherwise ignored.
+-- The `_language` argument is accepted for backwards compatibility
+-- with older callers but is otherwise ignored.
+-- `filter` is an optional set of allowed attribution ids - see
+-- BuildSegments for the semantics.
 ----------------------------------------------------------------------
-function Broadcast:BuildMessages(raidKey, encounterKey)
+function Broadcast:BuildMessages(raidKey, encounterKey, filter)
     local enc = NS.Attributions and NS.Attributions:GetEncounter(raidKey, encounterKey)
     if not enc then return {} end
 
     local title = string.format(L.titleFmt, enc.name or "?")
 
-    local segments = self:BuildSegments(raidKey, encounterKey)
+    local segments = self:BuildSegments(raidKey, encounterKey, filter)
     if #segments == 0 then
         return { title .. " " .. L.noAttribs }
     end
@@ -200,7 +208,7 @@ end
 -- Send an announce to the given chat channel.
 -- Returns the number of messages sent, or 0 on failure.
 ----------------------------------------------------------------------
-function Broadcast:Announce(raidKey, encounterKey, _language, channel)
+function Broadcast:Announce(raidKey, encounterKey, _language, channel, filter)
     channel = channel or (NS.db and NS.db.settings.announceChannel) or "RAID"
 
     if not self:IsValidChannel(channel) then
@@ -209,7 +217,7 @@ function Broadcast:Announce(raidKey, encounterKey, _language, channel)
     end
 
     local effectiveChannel = ResolveChannel(channel)
-    local messages = self:BuildMessages(raidKey, encounterKey)
+    local messages = self:BuildMessages(raidKey, encounterKey, filter)
     if #messages == 0 then return 0 end
 
     for _, msg in ipairs(messages) do
@@ -244,10 +252,11 @@ end
 Broadcast.RenderMarkerTokens = RenderMarkerTokens   -- exposed for tests/debug
 
 ----------------------------------------------------------------------
--- Preview (does not actually send, prints to the local chat frame)
+-- Preview (does not actually send, prints to the local chat frame).
+-- `filter` is an optional set of allowed attribution ids.
 ----------------------------------------------------------------------
-function Broadcast:Preview(raidKey, encounterKey)
-    local messages = self:BuildMessages(raidKey, encounterKey)
+function Broadcast:Preview(raidKey, encounterKey, filter)
+    local messages = self:BuildMessages(raidKey, encounterKey, filter)
     NS:Print(string.format("Preview (%d messages):", #messages))
     for i, msg in ipairs(messages) do
         print(string.format("  [%d] %s", i, RenderMarkerTokens(msg)))
