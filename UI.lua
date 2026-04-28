@@ -735,10 +735,11 @@ local function BuildEditorView(parent)
     attribScroll:SetScrollChild(attribContent)
     AutoSizeScrollChild(attribScroll, attribContent)
 
-    attribPanel.scroll   = attribScroll
-    attribPanel.content  = attribContent
-    attribPanel.rows     = {}
-    view.attribPanel     = attribPanel
+    attribPanel.scroll      = attribScroll
+    attribPanel.content     = attribContent
+    attribPanel.rows        = {}    -- attribution rows
+    attribPanel.headerRows  = {}    -- category header rows
+    view.attribPanel        = attribPanel
 
     -- Right: edit panel
     local editPanel = MakePanel(view)
@@ -1416,6 +1417,78 @@ end
 ----------------------------------------------------------------------
 -- Attribution row (middle column)
 ----------------------------------------------------------------------
+----------------------------------------------------------------------
+-- Build a section header row for a category (or for the implicit
+-- Uncategorized bucket when `isUncategorized` is true).
+--
+-- All interactive children are created here but their OnClick handlers
+-- are wired in RefreshAttribList per-call (they need closures over the
+-- current catId / raidKey / encKey).
+----------------------------------------------------------------------
+local function BuildCategoryHeaderRow(parent)
+    local row = CreateFrame("Frame", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    SkinFrame(row)
+    row:SetHeight(24)
+    row.kind = "header"
+
+    -- Chevron toggle
+    row.chevron = CreateFrame("Button", nil, row)
+    row.chevron:SetSize(16, 16)
+    row.chevron:SetPoint("LEFT", 4, 0)
+    row.chevron.label = FS(row.chevron, 12)
+    row.chevron.label:SetAllPoints()
+    row.chevron.label:SetJustifyH("CENTER")
+    row.chevron.label:SetText("v")
+
+    -- Tri-state announce checkbox
+    row.selectCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.selectCheck:SetSize(18, 18)
+    row.selectCheck:SetPoint("LEFT", row.chevron, "RIGHT", 4, 0)
+
+    -- Name label
+    row.label = FS(row, 12)
+    row.label:SetPoint("LEFT", row.selectCheck, "RIGHT", 4, 0)
+    row.label:SetJustifyH("LEFT")
+    row.label:SetWordWrap(false)
+    row.label:SetTextColor(unpack(COLOURS.accent))
+
+    -- Inline rename EditBox (hidden by default, toggled on double-click)
+    row.renameBox = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
+    row.renameBox:SetSize(120, 18)
+    row.renameBox:SetPoint("LEFT", row.selectCheck, "RIGHT", 4, 0)
+    row.renameBox:SetAutoFocus(false)
+    row.renameBox:SetMaxLetters(32)
+    row.renameBox:Hide()
+
+    -- Right-aligned button cluster
+    row.addAttribBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.addAttribBtn:SetSize(70, 18)
+    row.addAttribBtn:SetPoint("RIGHT", -4, 0)
+    row.addAttribBtn:SetText("+ Attrib")
+
+    row.deleteBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.deleteBtn:SetSize(22, 18)
+    row.deleteBtn:SetPoint("RIGHT", row.addAttribBtn, "LEFT", -2, 0)
+    row.deleteBtn:SetText("X")
+
+    row.renameBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.renameBtn:SetSize(22, 18)
+    row.renameBtn:SetPoint("RIGHT", row.deleteBtn, "LEFT", -2, 0)
+    row.renameBtn:SetText("R")
+
+    row.downBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.downBtn:SetSize(18, 18)
+    row.downBtn:SetPoint("RIGHT", row.renameBtn, "LEFT", -2, 0)
+    row.downBtn:SetText("v")
+
+    row.upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.upBtn:SetSize(18, 18)
+    row.upBtn:SetPoint("RIGHT", row.downBtn, "LEFT", -2, 0)
+    row.upBtn:SetText("^")
+
+    return row
+end
+
 local function BuildAttribRow(parent)
     local row = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
     SkinFrame(row)
@@ -1444,11 +1517,39 @@ local function BuildAttribRow(parent)
     return row
 end
 
+----------------------------------------------------------------------
+-- Walk enc.order once and bucket attribIds by their categoryId.
+-- Returns:
+--   uncatIds : array of attribIds with categoryId == nil
+--   buckets  : table { [catId] = { attribId1, ... } }
+-- Both arrays preserve enc.order's relative order.
+-- Attributions whose categoryId points at an unknown category fall
+-- back to the uncatIds bucket (defensive).
+----------------------------------------------------------------------
+local function BucketAttribsByCategory(raidKey, encKey)
+    local uncatIds, buckets = {}, {}
+    if not NS.Attributions then return uncatIds, buckets end
+    local enc = NS.Attributions:GetEncounter(raidKey, encKey)
+    if not enc then return uncatIds, buckets end
+
+    for attribId, attrib in NS.Attributions:IterateAttributions(raidKey, encKey) do
+        local cid = attrib.categoryId
+        if cid == nil or not enc.categories[cid] then
+            uncatIds[#uncatIds + 1] = attribId
+        else
+            buckets[cid] = buckets[cid] or {}
+            buckets[cid][#buckets[cid] + 1] = attribId
+        end
+    end
+    return uncatIds, buckets
+end
+
 local function RefreshAttribList()
     local panel = editorView and editorView.attribPanel
     if not panel then return end
 
-    for _, row in ipairs(panel.rows) do row:Hide() end
+    for _, row in ipairs(panel.rows)       do row:Hide() end
+    for _, row in ipairs(panel.headerRows) do row:Hide() end
 
     if not currentRaidKey or not currentEncounterKey then
         panel.header:SetText("Attributions")
@@ -1465,14 +1566,17 @@ local function RefreshAttribList()
 
     panel.header:SetText("Attributions - " .. (enc.name or "?"))
 
+    local uncatIds, buckets = BucketAttribsByCategory(currentRaidKey, currentEncounterKey)
+
     local y = 0
-    local i = 0
-    for attribId, attrib in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
-        i = i + 1
-        local row = panel.rows[i]
+    local attribIdx, headerIdx = 0, 0
+
+    local function renderAttribRow(attribId, attrib, indent)
+        attribIdx = attribIdx + 1
+        local row = panel.rows[attribIdx]
         if not row then
             row = BuildAttribRow(panel.content)
-            panel.rows[i] = row
+            panel.rows[attribIdx] = row
         end
 
         if attrib.marker and NS.Data then
@@ -1499,22 +1603,16 @@ local function RefreshAttribList()
             row.players:SetText("|cff888888(no players)|r")
         end
 
-        -- Selection highlighting via backdrop color
         if currentAttribKey == attribId then
             if row.SetBackdropColor then row:SetBackdropColor(unpack(COLOURS.rowActive)) end
         else
             if row.SetBackdropColor then row:SetBackdropColor(unpack(COLOURS.bg)) end
         end
 
-        -- Per-row "include in announce" checkbox state and handler.
-        -- The checkbox lives on the row but its OnClick consumes the
-        -- click, so toggling it does NOT also fire the row's OnClick
-        -- (which would change the currently-selected attribution).
         row.selectCheck:SetChecked(IsAttribSelected(attribId))
         local capturedId = attribId
         row.selectCheck:SetScript("OnClick", function(self)
             SetAttribSelected(capturedId, self:GetChecked() and true or false)
-            -- Refresh the master checkbox state without rebuilding rows
             if panel.masterCheck then
                 panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
             end
@@ -1527,15 +1625,69 @@ local function RefreshAttribList()
         end)
 
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", panel.content, "TOPLEFT", 0, -y)
-        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0, -y)
+        row:SetPoint("TOPLEFT",  panel.content, "TOPLEFT",  indent, -y)
+        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0,      -y)
         row:Show()
         y = y + 52
     end
+
+    local function renderHeaderRow(catId, name, isUncategorized)
+        headerIdx = headerIdx + 1
+        local row = panel.headerRows[headerIdx]
+        if not row then
+            row = BuildCategoryHeaderRow(panel.content)
+            panel.headerRows[headerIdx] = row
+        end
+        row.label:SetText(name)
+        row.label:Show()
+        row.renameBox:Hide()
+
+        row.upBtn:Hide()
+        row.downBtn:Hide()
+        row.renameBtn:Hide()
+        row.deleteBtn:Hide()
+        row.addAttribBtn:Hide()
+
+        row.chevron:Show()
+        row.chevron:SetScript("OnClick", nil)
+        row.selectCheck:Show()
+        row.selectCheck:SetScript("OnClick", nil)
+        row.selectCheck:SetChecked(true)
+
+        if isUncategorized then
+            row.label:SetTextColor(unpack(COLOURS.dim))
+        else
+            row.label:SetTextColor(unpack(COLOURS.accent))
+        end
+
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT",  panel.content, "TOPLEFT",  0, -y)
+        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0, -y)
+        row:Show()
+        y = y + 26
+    end
+
+    -- 1. Uncategorized first (only if non-empty)
+    if #uncatIds > 0 then
+        renderHeaderRow(nil, "- Uncategorized -", true)
+        for _, attribId in ipairs(uncatIds) do
+            local attrib = enc.attributions[attribId]
+            if attrib then renderAttribRow(attribId, attrib, 0) end
+        end
+    end
+
+    -- 2. Each category in categoryOrder
+    for catId, cat in NS.Attributions:IterateCategories(currentRaidKey, currentEncounterKey) do
+        renderHeaderRow(catId, cat.name or "?", false)
+        local ids = buckets[catId] or {}
+        for _, attribId in ipairs(ids) do
+            local attrib = enc.attributions[attribId]
+            if attrib then renderAttribRow(attribId, attrib, 20) end
+        end
+    end
+
     panel.content:SetHeight(math.max(1, y))
 
-    -- Sync the master checkbox: checked iff every attribution is
-    -- selected (and there is at least one).
     if panel.masterCheck then
         panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
     end
