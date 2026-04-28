@@ -862,15 +862,26 @@ local function BuildEditorView(parent)
     end)
     clearMarkerBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Category dropdown
+    local categoryLabel = FS(editPanel, 10)
+    categoryLabel:SetPoint("TOPLEFT", 10, -62)
+    categoryLabel:SetText("Category:")
+    categoryLabel:SetTextColor(unpack(COLOURS.dim))
+
+    local categoryDrop = CreateFrame("Frame", "SRACategoryAttribDropdown", editPanel, "UIDropDownMenuTemplate")
+    categoryDrop:SetPoint("TOPLEFT", 4, -78)
+    UIDropDownMenu_SetWidth(categoryDrop, 180)
+    editPanel.categoryDrop = categoryDrop
+
     -- Context text
     local contextLabel = FS(editPanel, 10)
-    contextLabel:SetPoint("TOPLEFT", 10, -88)
+    contextLabel:SetPoint("TOPLEFT", 10, -112)
     contextLabel:SetText("Context:")
     contextLabel:SetTextColor(unpack(COLOURS.dim))
 
     local contextBox = CreateFrame("EditBox", nil, editPanel, "InputBoxTemplate")
     contextBox:SetSize(220, 22)
-    contextBox:SetPoint("TOPLEFT", 16, -104)
+    contextBox:SetPoint("TOPLEFT", 16, -128)
     contextBox:SetAutoFocus(false)
     contextBox:SetMaxLetters(120)
     contextBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -889,14 +900,14 @@ local function BuildEditorView(parent)
     -- remove X button), plus an input + Add button + From Group
     -- dropdown trigger underneath for adding new ones.
     local playersLabel = FS(editPanel, 10)
-    playersLabel:SetPoint("TOPLEFT", 10, -136)
+    playersLabel:SetPoint("TOPLEFT", 10, -160)
     playersLabel:SetText("Players:")
     playersLabel:SetTextColor(unpack(COLOURS.dim))
 
     -- List backdrop / container
     local playersBg = MakePanel(editPanel)
-    playersBg:SetPoint("TOPLEFT", 16, -152)
-    playersBg:SetPoint("TOPRIGHT", -16, -152)
+    playersBg:SetPoint("TOPLEFT", 16, -176)
+    playersBg:SetPoint("TOPRIGHT", -16, -176)
     playersBg:SetHeight(96)
 
     local playersScroll = CreateFrame("ScrollFrame", nil, playersBg, "UIPanelScrollFrameTemplate")
@@ -918,7 +929,7 @@ local function BuildEditorView(parent)
     -- comfortably inside the edit panel (which is only ~270 px wide).
     local playersInput = CreateFrame("EditBox", nil, editPanel, "InputBoxTemplate")
     playersInput:SetSize(170, 22)
-    playersInput:SetPoint("TOPLEFT", 16, -256)
+    playersInput:SetPoint("TOPLEFT", 16, -280)
     playersInput:SetAutoFocus(false)
     playersInput:SetMaxLetters(32)
 
@@ -963,13 +974,13 @@ local function BuildEditorView(parent)
     -- multi-line EditBox wrapped in a ScrollFrame with a backdrop
     -- frame behind it to give the illusion of a "textarea" control.
     local noteLabel = FS(editPanel, 10)
-    noteLabel:SetPoint("TOPLEFT", 10, -316)
+    noteLabel:SetPoint("TOPLEFT", 10, -340)
     noteLabel:SetText("Note:")
     noteLabel:SetTextColor(unpack(COLOURS.dim))
 
     local noteBg = MakePanel(editPanel)
-    noteBg:SetPoint("TOPLEFT", 16, -332)
-    noteBg:SetPoint("TOPRIGHT", -16, -332)
+    noteBg:SetPoint("TOPLEFT", 16, -356)
+    noteBg:SetPoint("TOPRIGHT", -16, -356)
     noteBg:SetHeight(110)
 
     local noteScroll = CreateFrame("ScrollFrame", "SRANoteScroll", noteBg, "UIPanelScrollFrameTemplate")
@@ -1927,6 +1938,9 @@ local function RefreshEditPanel()
         SafeSetText(panel.playersInput, "")
         UIDropDownMenu_SetSelectedValue(panel.markerDrop, 0)
         UIDropDownMenu_SetText(panel.markerDrop, "|cff888888(none)|r")
+        if panel.categoryDrop then
+            UIDropDownMenu_SetText(panel.categoryDrop, "|cff888888(none)|r")
+        end
         panel.contextBox:Disable()
         if panel.playersInput then panel.playersInput:Disable() end
         if panel.noteBox then panel.noteBox:Disable() end
@@ -1951,6 +1965,67 @@ local function RefreshEditPanel()
     else
         UIDropDownMenu_SetSelectedValue(panel.markerDrop, 0)
         UIDropDownMenu_SetText(panel.markerDrop, "|cff888888(none)|r")
+    end
+
+    -- Refresh the category dropdown
+    if panel.categoryDrop then
+        UIDropDownMenu_Initialize(panel.categoryDrop, function(self, level)
+            local none = UIDropDownMenu_CreateInfo()
+            none.text         = "|cff888888(none)|r"
+            none.notCheckable = true
+            none.func = function()
+                if NS.Attributions and currentRaidKey and currentEncounterKey and currentAttribKey then
+                    NS.Attributions:SetAttributionCategory(
+                        currentRaidKey, currentEncounterKey, currentAttribKey, nil)
+                    UIDropDownMenu_SetText(panel.categoryDrop, "|cff888888(none)|r")
+                end
+            end
+            UIDropDownMenu_AddButton(none, level)
+
+            if NS.Attributions and currentRaidKey and currentEncounterKey then
+                for catId, cat in NS.Attributions:IterateCategories(currentRaidKey, currentEncounterKey) do
+                    local capId, capName = catId, cat.name or "?"
+                    local info = UIDropDownMenu_CreateInfo()
+                    info.text         = capName
+                    info.value        = capId
+                    info.notCheckable = true
+                    info.func = function()
+                        if NS.Attributions and currentRaidKey and currentEncounterKey and currentAttribKey then
+                            NS.Attributions:SetAttributionCategory(
+                                currentRaidKey, currentEncounterKey, currentAttribKey, capId)
+                            UIDropDownMenu_SetText(panel.categoryDrop, capName)
+                        end
+                    end
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end
+
+            local sep = UIDropDownMenu_CreateInfo()
+            sep.text = ""; sep.notCheckable = true; sep.disabled = true
+            UIDropDownMenu_AddButton(sep, level)
+
+            local newOne = UIDropDownMenu_CreateInfo()
+            newOne.text         = "+ New Category..."
+            newOne.notCheckable = true
+            newOne.func = function()
+                local capturedAttrib = currentAttribKey
+                UI:OpenCategoryPicker(function(newCatId)
+                    if newCatId and NS.Attributions and currentRaidKey and currentEncounterKey then
+                        NS.Attributions:SetAttributionCategory(
+                            currentRaidKey, currentEncounterKey, capturedAttrib, newCatId)
+                    end
+                end)
+            end
+            UIDropDownMenu_AddButton(newOne, level)
+        end)
+
+        local currentLabel = "|cff888888(none)|r"
+        if attrib.categoryId then
+            local cat = NS.Attributions:GetCategory(
+                currentRaidKey, currentEncounterKey, attrib.categoryId)
+            if cat then currentLabel = cat.name or "?" end
+        end
+        UIDropDownMenu_SetText(panel.categoryDrop, currentLabel)
     end
 end
 
