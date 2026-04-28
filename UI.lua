@@ -338,6 +338,21 @@ StaticPopupDialogs["SRA_DELETE_ENCOUNTER"] = {
     preferredIndex = 3,
 }
 
+StaticPopupDialogs["SRA_DELETE_CATEGORY"] = {
+    text = "Delete category '%s' and move %d attributions to Uncategorized?",
+    button1 = "Delete",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        if data and NS.Attributions then
+            NS.Attributions:DeleteCategory(data.raidKey, data.encKey, data.catId)
+        end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
 StaticPopupDialogs["SRA_NEW_CATEGORY"] = {
     text = "New category name:",
     button1 = "Create",
@@ -1762,12 +1777,6 @@ local function RefreshAttribList()
         row.label:Show()
         row.renameBox:Hide()
 
-        row.upBtn:Hide()
-        row.downBtn:Hide()
-        row.renameBtn:Hide()
-        row.deleteBtn:Hide()
-        row.addAttribBtn:Hide()
-
         row.chevron:Show()
         row.chevron:SetScript("OnClick", nil)
         row.selectCheck:Show()
@@ -1776,8 +1785,92 @@ local function RefreshAttribList()
 
         if isUncategorized then
             row.label:SetTextColor(unpack(COLOURS.dim))
+            row.upBtn:Hide()
+            row.downBtn:Hide()
+            row.renameBtn:Hide()
+            row.deleteBtn:Hide()
+            row.addAttribBtn:Hide()
         else
             row.label:SetTextColor(unpack(COLOURS.accent))
+
+            local capCatId = catId
+
+            -- Reorder
+            row.upBtn:Show()
+            row.upBtn:SetScript("OnClick", function()
+                if NS.Attributions then
+                    NS.Attributions:MoveCategory(currentRaidKey, currentEncounterKey, capCatId, -1)
+                end
+            end)
+            row.downBtn:Show()
+            row.downBtn:SetScript("OnClick", function()
+                if NS.Attributions then
+                    NS.Attributions:MoveCategory(currentRaidKey, currentEncounterKey, capCatId, 1)
+                end
+            end)
+
+            -- Rename: ✎ (R) button or double-click on the label
+            local function startRename()
+                row.label:Hide()
+                row.renameBox:SetText(name)
+                row.renameBox:Show()
+                row.renameBox:SetFocus()
+                row.renameBox:HighlightText()
+            end
+            row.renameBtn:Show()
+            row.renameBtn:SetScript("OnClick", startRename)
+            row.renameBox:SetScript("OnEnterPressed", function(self)
+                local newName = strtrim(self:GetText() or "")
+                self:ClearFocus()
+                if newName ~= "" and NS.Attributions then
+                    NS.Attributions:RenameCategory(currentRaidKey, currentEncounterKey, capCatId, newName)
+                end
+                self:Hide()
+                row.label:Show()
+            end)
+            row.renameBox:SetScript("OnEscapePressed", function(self)
+                self:ClearFocus()
+                self:Hide()
+                row.label:Show()
+            end)
+            row.renameBox:SetScript("OnEditFocusLost", function(self)
+                self:Hide()
+                row.label:Show()
+            end)
+
+            -- Double-click on label uses an overlay Button (FontString
+            -- has no OnMouseDown / OnDoubleClick on TBC).
+            if not row.labelClick then
+                row.labelClick = CreateFrame("Button", nil, row)
+                row.labelClick:RegisterForClicks("LeftButtonUp")
+            end
+            row.labelClick:ClearAllPoints()
+            row.labelClick:SetAllPoints(row.label)
+            row.labelClick:SetScript("OnDoubleClick", function() startRename() end)
+            row.labelClick:Show()
+
+            -- Delete: silent on empty, popup on non-empty
+            row.deleteBtn:Show()
+            row.deleteBtn:SetScript("OnClick", function()
+                local count = #(buckets[capCatId] or {})
+                if count == 0 then
+                    if NS.Attributions then
+                        NS.Attributions:DeleteCategory(currentRaidKey, currentEncounterKey, capCatId)
+                    end
+                else
+                    local dlg = StaticPopup_Show("SRA_DELETE_CATEGORY", name, count)
+                    if dlg then
+                        dlg.data = {
+                            raidKey = currentRaidKey,
+                            encKey  = currentEncounterKey,
+                            catId   = capCatId,
+                        }
+                    end
+                end
+            end)
+
+            -- + Attrib button stays hidden in this task; wired in Task 7.
+            row.addAttribBtn:Hide()
         end
 
         row:ClearAllPoints()
