@@ -1427,7 +1427,21 @@ end
 ----------------------------------------------------------------------
 local function BuildCategoryHeaderRow(parent)
     local row = CreateFrame("Frame", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-    SkinFrame(row)
+    if not row.SetBackdrop and BackdropTemplateMixin then
+        Mixin(row, BackdropTemplateMixin)
+    end
+    if row.SetBackdrop then
+        row:SetBackdrop({
+            bgFile   = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Buttons\\WHITE8x8",
+            edgeSize = 1,
+        })
+        -- Slightly tinted blue band so the header stands out visually
+        -- against the attribution rows regardless of the active skin
+        -- (ElvUI's Transparent template makes plain Frames invisible).
+        row:SetBackdropColor(0.05, 0.10, 0.18, 0.95)
+        row:SetBackdropBorderColor(unpack(COLOURS.border))
+    end
     row:SetHeight(24)
     row.kind = "header"
 
