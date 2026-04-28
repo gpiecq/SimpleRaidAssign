@@ -338,6 +338,41 @@ StaticPopupDialogs["SRA_DELETE_ENCOUNTER"] = {
     preferredIndex = 3,
 }
 
+StaticPopupDialogs["SRA_NEW_CATEGORY"] = {
+    text = "New category name:",
+    button1 = "Create",
+    button2 = "Cancel",
+    hasEditBox = true,
+    maxLetters = 32,
+    OnShow = function(self)
+        local eb = PopupEditBox(self)
+        if eb then eb:SetText(""); eb:SetFocus() end
+    end,
+    OnAccept = function(self, data)
+        local eb = PopupEditBox(self)
+        local name = eb and eb:GetText() or ""
+        name = strtrim(name or "")
+        if name == "" or not data then return end
+        if NS.Attributions then
+            NS.Attributions:AddCategory(data.raidKey, data.encKey, name)
+        end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        local parent = self:GetParent()
+        local data   = parent.data
+        local name   = strtrim(self:GetText() or "")
+        if name ~= "" and data and NS.Attributions then
+            NS.Attributions:AddCategory(data.raidKey, data.encKey, name)
+        end
+        parent:Hide()
+    end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
 -- ====================================================================
 --  RAID SUMMARY VIEW
 -- ====================================================================
@@ -641,6 +676,15 @@ local function BuildEditorView(parent)
     masterLabel:SetPoint("LEFT", masterCheck, "RIGHT", 2, 0)
     masterLabel:SetText("Select all / none")
     masterLabel:SetTextColor(unpack(COLOURS.dim))
+
+    local addCategoryBtn = CreateFrame("Button", nil, attribPanel, "UIPanelButtonTemplate")
+    addCategoryBtn:SetSize(110, 20)
+    addCategoryBtn:SetPoint("LEFT", masterLabel, "RIGHT", 12, 0)
+    addCategoryBtn:SetText("+ Add Category")
+    addCategoryBtn:SetScript("OnClick", function()
+        if not currentRaidKey or not currentEncounterKey then return end
+        UI:OpenCategoryPicker()
+    end)
 
     local addAttribBtn = CreateFrame("Button", nil, attribPanel, "UIPanelButtonTemplate")
     addAttribBtn:SetSize(130, 20)
@@ -1077,6 +1121,57 @@ function UI:OpenBossPicker()
         bossPickerFrame = CreateFrame("Frame", "SRABossPickerMenu", UIParent, "UIDropDownMenuTemplate")
     end
     ShowEasyMenu(menu, bossPickerFrame, "cursor", 0, 0, "MENU")
+end
+
+----------------------------------------------------------------------
+-- Category presets dropdown. Selecting a preset creates the category
+-- immediately. Selecting "Custom..." opens SRA_NEW_CATEGORY.
+----------------------------------------------------------------------
+local CATEGORY_PRESETS = {
+    "P1", "P2", "P3", "P4",
+    "Pull", "Adds", "Burn", "Transition", "Heroism",
+}
+
+local categoryPickerFrame
+
+function UI:OpenCategoryPicker(onPick)
+    if not currentRaidKey or not currentEncounterKey then return end
+
+    local menu = {}
+    for _, name in ipairs(CATEGORY_PRESETS) do
+        local capturedName = name
+        menu[#menu + 1] = {
+            text         = capturedName,
+            notCheckable = true,
+            func         = function()
+                if NS.Attributions then
+                    local catId = NS.Attributions:AddCategory(
+                        currentRaidKey, currentEncounterKey, capturedName)
+                    if onPick then onPick(catId) end
+                end
+            end,
+        }
+    end
+    menu[#menu + 1] = { text = "", notCheckable = true, disabled = true }
+    menu[#menu + 1] = {
+        text         = "Custom...",
+        notCheckable = true,
+        func         = function()
+            local dialog = StaticPopup_Show("SRA_NEW_CATEGORY")
+            if dialog then
+                dialog.data = {
+                    raidKey = currentRaidKey,
+                    encKey  = currentEncounterKey,
+                    onPick  = onPick,
+                }
+            end
+        end,
+    }
+
+    if not categoryPickerFrame then
+        categoryPickerFrame = CreateFrame("Frame", "SRACategoryPickerMenu", UIParent, "UIDropDownMenuTemplate")
+    end
+    ShowEasyMenu(menu, categoryPickerFrame, "cursor", 0, 0, "MENU")
 end
 
 ----------------------------------------------------------------------
