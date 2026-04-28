@@ -20,7 +20,7 @@ Add an optional category layer (e.g. `P1`, `P2`, `Adds`, `Burn`) inside a boss e
 8. **Ergonomic details:**
    - Rename: double-click on the category label → inline `EditBox`. The `✎` button does the same for discoverability.
    - Reorder: `▲ ▼` arrows on the category header (categories) and existing arrows on the attribution row (intra-category, skipping foreign categories).
-   - Fold state persisted in `SimpleRaidAssignCharDB.uiFold[raidKey..":"..encKey][catId]`, defaulting to expanded.
+   - Fold state persisted in the existing `SimpleRaidAssignCharDB.ui.collapsed` slot, keyed by `<raidKey>:<encKey>:<catId>`, defaulting to expanded.
 9. **Data-model approach: flat (`categoryId` on attribution).** `enc.order` stays the canonical global order; categories are an additional grouping layer. Selected over the nested approach because it preserves round-trip safety with v1.1 clients.
 
 ## Data model
@@ -236,16 +236,16 @@ A v1.1 client editing an existing v1.2 attribution preserves its `categoryId` (o
 
 ### CharDB
 
+The existing `SimpleRaidAssignCharDB.ui.collapsed` slot (already declared in `Core.lua`'s `CHAR_DEFAULTS`) is reused. Keys are flat strings:
+
 ```lua
-SimpleRaidAssignCharDB.uiFold = {
-  ["<raidKey>:<encKey>"] = {
-    ["<catId>"]            = true,    -- folded
-    ["__uncategorized__"]  = false,   -- expanded (key absent ⇒ default expanded)
-  }
+SimpleRaidAssignCharDB.ui.collapsed = {
+  ["<raidKey>:<encKey>:<catId>"]              = true,   -- folded
+  ["<raidKey>:<encKey>:__uncategorized__"]    = false,  -- expanded (absent ⇒ default expanded)
 }
 ```
 
-Garbage-collected on `ADDON_LOADED`: drop entries whose `raidKey` or `encKey` no longer exists.
+Flat-keyed strings keep the merge-defaults logic simple and avoid nested-table churn during garbage collection. Garbage-collected on `ADDON_LOADED`: drop entries whose `<raidKey>:<encKey>` prefix no longer corresponds to an existing encounter.
 
 ## Static popups
 
