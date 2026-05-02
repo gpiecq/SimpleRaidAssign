@@ -222,6 +222,52 @@ end
 
 NS:RegisterCallback("ADDON_LOADED", GCFoldState)
 
+----------------------------------------------------------------------
+-- Compute the announce-selection state of a category as a tri-state:
+--   "all"  -> every attribution in the bucket is selected
+--   "none" -> none are selected (or the bucket is empty)
+--   "some" -> mixed
+----------------------------------------------------------------------
+local function CategorySelectionState(attribIds)
+    if not attribIds or #attribIds == 0 then return "none" end
+    local checked, unchecked = 0, 0
+    for _, id in ipairs(attribIds) do
+        if IsAttribSelected(id) then checked = checked + 1
+        else                          unchecked = unchecked + 1 end
+    end
+    if unchecked == 0 then return "all"  end
+    if checked   == 0 then return "none" end
+    return "some"
+end
+
+local function ApplyCategorySelection(attribIds, state)
+    if not attribIds then return end
+    for _, id in ipairs(attribIds) do
+        SetAttribSelected(id, state and true or false)
+    end
+end
+
+----------------------------------------------------------------------
+-- Visualise a tri-state checkbox. TBC's UICheckButtonTemplate has no
+-- native mixed state, so we approximate "some" by leaving the box
+-- checked but dimming its checked texture's vertex colour.
+----------------------------------------------------------------------
+local function ApplyTriState(check, state)
+    if state == "all" then
+        check:SetChecked(true)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(1, 1, 1, 1) end
+    elseif state == "some" then
+        check:SetChecked(true)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(0.6, 0.6, 0.6, 0.7) end
+    else
+        check:SetChecked(false)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(1, 1, 1, 1) end
+    end
+end
+
 local function BuildSelectedFilter(raidKey, encounterKey)
     local filter = {}
     local any = false
@@ -731,11 +777,20 @@ local function BuildEditorView(parent)
     masterCheck:SetPoint("TOPLEFT", 6, -38)
     masterCheck:SetScript("OnClick", function(self)
         if not currentRaidKey or not currentEncounterKey then
-            self:SetChecked(false)
-            return
+            self:SetChecked(false); return
         end
-        local newState = self:GetChecked() and true or false
-        SetAllAttribsSelected(currentRaidKey, currentEncounterKey, newState)
+        local checked, unchecked = 0, 0
+        for attribId in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
+            if IsAttribSelected(attribId) then checked = checked + 1
+            else                                unchecked = unchecked + 1 end
+        end
+        local state
+        if checked == 0 and unchecked == 0 then state = "none"
+        elseif unchecked == 0              then state = "all"
+        elseif checked   == 0              then state = "none"
+        else                                     state = "some" end
+        local newSelected = (state ~= "all")
+        SetAllAttribsSelected(currentRaidKey, currentEncounterKey, newSelected)
         Refresh()
     end)
     attribPanel.masterCheck = masterCheck
@@ -1801,9 +1856,7 @@ local function RefreshAttribList()
         local capturedId = attribId
         row.selectCheck:SetScript("OnClick", function(self)
             SetAttribSelected(capturedId, self:GetChecked() and true or false)
-            if panel.masterCheck then
-                panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
-            end
+            Refresh()
         end)
 
         row:SetScript("OnClick", function()
@@ -1838,9 +1891,23 @@ local function RefreshAttribList()
             SetSectionFolded(currentRaidKey, currentEncounterKey, capFoldId, not folded)
             Refresh()
         end)
+
+        -- Per-category tri-state checkbox
+        local catBucket
+        if isUncategorized then
+            catBucket = uncatIds
+        else
+            catBucket = buckets[capFoldId] or {}
+        end
+        local catState = CategorySelectionState(catBucket)
+        ApplyTriState(row.selectCheck, catState)
         row.selectCheck:Show()
-        row.selectCheck:SetScript("OnClick", nil)
-        row.selectCheck:SetChecked(true)
+        row.selectCheck:SetScript("OnClick", function(self)
+            local current = CategorySelectionState(catBucket)
+            local newSelected = (current ~= "all")
+            ApplyCategorySelection(catBucket, newSelected)
+            Refresh()
+        end)
 
         if isUncategorized then
             row.label:SetTextColor(unpack(COLOURS.dim))
@@ -1976,7 +2043,17 @@ local function RefreshAttribList()
     panel.content:SetHeight(math.max(1, y))
 
     if panel.masterCheck then
-        panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
+        local checked, unchecked = 0, 0
+        for attribId in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
+            if IsAttribSelected(attribId) then checked = checked + 1
+            else                                unchecked = unchecked + 1 end
+        end
+        local masterState
+        if checked == 0 and unchecked == 0 then masterState = "none"
+        elseif unchecked == 0              then masterState = "all"
+        elseif checked   == 0              then masterState = "none"
+        else                                     masterState = "some" end
+        ApplyTriState(panel.masterCheck, masterState)
     end
 end
 
