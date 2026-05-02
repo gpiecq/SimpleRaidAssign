@@ -1928,8 +1928,19 @@ local function RefreshAttribList()
                 end
             end)
 
-            -- + Attrib button stays hidden in this task; wired in Task 7.
-            row.addAttribBtn:Hide()
+            row.addAttribBtn:Show()
+            row.addAttribBtn:SetScript("OnClick", function()
+                if not (currentRaidKey and currentEncounterKey and NS.Attributions) then return end
+                CommitPendingEdits()
+                local newId = NS.Attributions:AddAttribution(
+                    currentRaidKey, currentEncounterKey,
+                    nil, "", {}, capCatId
+                )
+                currentAttribKey = newId
+                -- Force the section open so the new attribution is visible
+                SetSectionFolded(currentRaidKey, currentEncounterKey, capCatId, false)
+                Refresh()
+            end)
         end
 
         row:ClearAllPoints()
