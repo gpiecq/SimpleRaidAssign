@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-02
+
+### Added
+
+#### Per-boss attribution categories
+- Each boss can now hold an ordered list of **categories** (e.g. `P1`, `P2`, `Adds`, `Burn`) inside which attributions are grouped. Categories are optional: a boss with no category renders exactly like in v1.1, all its attributions in an implicit `- Uncategorized -` section at the top of the list.
+- New `+ Add Category` button next to the master "Select all" checkbox. It opens a preset dropdown (`P1`, `P2`, `P3`, `P4`, `Pull`, `Adds`, `Burn`, `Transition`, `Heroism`) plus a `Custom...` entry that pops up a text input (max 32 chars).
+- Each category renders as a foldable header. Per-header controls: chevron `v/>` for fold, `^` / `v` to reorder among siblings, `R` (or double-click on the label) to rename inline, `X` to delete (silent on empty, popup confirmation on non-empty), `+ Attrib` to add an attribution scoped to this category.
+- New `Category:` dropdown in the right edit panel (between the marker dropdown and the context input) lets the selected attribution be reassigned to another category, to `(none)`, or to a brand new category created on the spot via `+ New Category...`.
+- Fold state is persisted per character in `SimpleRaidAssignCharDB.ui.collapsed[<raidKey>:<encKey>:<catId>]` (existing CharDB slot reused). Stale entries are garbage-collected on `ADDON_LOADED`.
+
+#### Per-category chat announce
+- The `[Announce]` button now emits **one chat message per category**: `[Boss - <CategoryName>] segment / segment / ...`, in `categoryOrder`. The Uncategorized bucket emits a generic `[Boss] ...` message first (identical to the v1.1 format).
+- Empty categories and categories whose every attribution is unchecked are silently skipped.
+- The 255-char auto-split applies independently per block: each block is run through `ChunkMessages` with its own title.
+
+#### Tri-state announce checkboxes
+- Each category header now has its own announce checkbox. State is tri-state: `all` (every attrib in the category checked) / `some` (mixed - visualised by dimming the checked texture) / `none`. Clicking cascades: `all` -> `none`, otherwise -> `all`.
+- The master `Select all / none` checkbox is now tri-state across the whole encounter using the same rules.
+
+### Changed
+- **`Attributions.lua`** API additions: `AddCategory`, `RenameCategory`, `DeleteCategory`, `MoveCategory`, `IterateCategories`, `GetCategory`, `SetAttributionCategory`. `AddAttribution` accepts an optional `categoryId` argument (defaults to `nil` -> Uncategorized - backwards compatible). `MoveAttribution` now scans for the closest neighbour with the same `categoryId` instead of the immediate one, so up/down arrows stay scoped to a category.
+- **`Broadcast.lua`** API: `BuildSegments` accepts an optional `categoryFilter` argument (`nil` = legacy, `"uncategorized"`, or a `catId`). `BuildMessages` now produces multiple titled blocks. Public signature of `Announce` and `Preview` is unchanged.
+- **Lazy migration**: legacy v1.1 encounters acquire empty `categories = {}` and `categoryOrder = {}` the first time they are read via `Attributions:GetEncounter`. No `ADDON_LOADED` migration step.
+
+### Compatibility
+- **`SRA1` protocol unchanged.** New encounter fields (`categories`, `categoryOrder`) and the `categoryId` field on attributions are sent as-is via the generic serialiser. v1.1 clients store the unknown fields in their SavedVariables and round-trip them intact when re-pushing; their own UI only renders the flat list, as before.
+- **Export / Import (`SRA1:` prefix) format unchanged.**
+
 ## [1.1.0] - 2026-04-08
 
 ### Added
@@ -200,7 +229,8 @@ Initial scaffold of the addon, modeled after the NodeCounter modular architectur
 - GitHub Actions workflow `build-addon.yml` for automated builds on pull requests (uploads versioned artifact)
 - GitHub Actions workflow `release.yml` for automated GitHub Releases on merge to main, with idempotent tag check and changelog extraction for release notes
 
-[Unreleased]: https://github.com/gpiecq/SimpleRaidAssign/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/gpiecq/SimpleRaidAssign/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v1.2.0
 [1.1.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v1.1.0
 [1.0.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v1.0.0
 [0.2.0]: https://github.com/gpiecq/SimpleRaidAssign/releases/tag/v0.2.0
