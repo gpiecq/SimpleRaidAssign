@@ -169,6 +169,59 @@ local function SetAllAttribsSelected(raidKey, encounterKey, state)
     end
 end
 
+----------------------------------------------------------------------
+-- Per-character fold state for category sections.
+-- Stored in the existing CHAR_DEFAULTS.ui.collapsed slot, keyed by
+-- "<raidKey>:<encKey>:<catId>" (or "...:__uncategorized__"). A key
+-- mapping to a truthy value means the section is collapsed; absent or
+-- false means expanded.
+----------------------------------------------------------------------
+local UNCAT_KEY = "__uncategorized__"
+
+local function FoldKey(raidKey, encKey, catIdOrNil)
+    return string.format("%s:%s:%s", raidKey or "?", encKey or "?", catIdOrNil or UNCAT_KEY)
+end
+
+local function GetCollapsedTable()
+    if not NS.charDb then return nil end
+    NS.charDb.ui = NS.charDb.ui or {}
+    NS.charDb.ui.collapsed = NS.charDb.ui.collapsed or {}
+    return NS.charDb.ui.collapsed
+end
+
+local function IsSectionFolded(raidKey, encKey, catIdOrNil)
+    local t = GetCollapsedTable()
+    if not t then return false end
+    return t[FoldKey(raidKey, encKey, catIdOrNil)] == true
+end
+
+local function SetSectionFolded(raidKey, encKey, catIdOrNil, folded)
+    local t = GetCollapsedTable()
+    if not t then return end
+    if folded then
+        t[FoldKey(raidKey, encKey, catIdOrNil)] = true
+    else
+        t[FoldKey(raidKey, encKey, catIdOrNil)] = nil
+    end
+end
+
+----------------------------------------------------------------------
+-- Drop fold-state entries whose <raidKey>:<encKey> prefix no longer
+-- corresponds to an existing encounter. Idempotent.
+----------------------------------------------------------------------
+local function GCFoldState()
+    local t = GetCollapsedTable()
+    if not t or not NS.db or not NS.db.raids then return end
+    for key in pairs(t) do
+        local raidKey, encKey = key:match("^([^:]+):([^:]+):")
+        local raid = raidKey and NS.db.raids[raidKey]
+        local exists = raid and raid.encounters and encKey and raid.encounters[encKey]
+        if not exists then t[key] = nil end
+    end
+end
+
+NS:RegisterCallback("ADDON_LOADED", GCFoldState)
+
 local function BuildSelectedFilter(raidKey, encounterKey)
     local filter = {}
     local any = false
@@ -1777,8 +1830,14 @@ local function RefreshAttribList()
         row.label:Show()
         row.renameBox:Hide()
 
+        local capFoldId = catId  -- nil for the Uncategorized header
+        local folded = IsSectionFolded(currentRaidKey, currentEncounterKey, capFoldId)
+        row.chevron.label:SetText(folded and ">" or "v")
         row.chevron:Show()
-        row.chevron:SetScript("OnClick", nil)
+        row.chevron:SetScript("OnClick", function()
+            SetSectionFolded(currentRaidKey, currentEncounterKey, capFoldId, not folded)
+            Refresh()
+        end)
         row.selectCheck:Show()
         row.selectCheck:SetScript("OnClick", nil)
         row.selectCheck:SetChecked(true)
@@ -1883,19 +1942,23 @@ local function RefreshAttribList()
     -- 1. Uncategorized first (only if non-empty)
     if #uncatIds > 0 then
         renderHeaderRow(nil, "- Uncategorized -", true)
-        for _, attribId in ipairs(uncatIds) do
-            local attrib = enc.attributions[attribId]
-            if attrib then renderAttribRow(attribId, attrib, 0) end
+        if not IsSectionFolded(currentRaidKey, currentEncounterKey, nil) then
+            for _, attribId in ipairs(uncatIds) do
+                local attrib = enc.attributions[attribId]
+                if attrib then renderAttribRow(attribId, attrib, 0) end
+            end
         end
     end
 
     -- 2. Each category in categoryOrder
     for catId, cat in NS.Attributions:IterateCategories(currentRaidKey, currentEncounterKey) do
         renderHeaderRow(catId, cat.name or "?", false)
-        local ids = buckets[catId] or {}
-        for _, attribId in ipairs(ids) do
-            local attrib = enc.attributions[attribId]
-            if attrib then renderAttribRow(attribId, attrib, 20) end
+        if not IsSectionFolded(currentRaidKey, currentEncounterKey, catId) then
+            local ids = buckets[catId] or {}
+            for _, attribId in ipairs(ids) do
+                local attrib = enc.attributions[attribId]
+                if attrib then renderAttribRow(attribId, attrib, 20) end
+            end
         end
     end
 
