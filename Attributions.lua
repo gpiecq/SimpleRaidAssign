@@ -26,10 +26,23 @@ local function GetRaid(raidKey)
     return NS.Raids and NS.Raids:Get(raidKey) or nil
 end
 
+----------------------------------------------------------------------
+-- Normalise an encounter table in place so newer fields are present
+-- (categories / categoryOrder). Called from every read/write entry
+-- point so legacy v1.1 saves are migrated lazily without touching
+-- ADDON_LOADED. Idempotent.
+----------------------------------------------------------------------
+local function NormalizeEncounter(enc)
+    if not enc then return nil end
+    if enc.categories     == nil then enc.categories     = {} end
+    if enc.categoryOrder  == nil then enc.categoryOrder  = {} end
+    return enc
+end
+
 local function GetEncounter(raidKey, encounterKey)
     local raid = GetRaid(raidKey)
     if not raid or not raid.encounters then return nil end
-    return raid.encounters[encounterKey]
+    return NormalizeEncounter(raid.encounters[encounterKey])
 end
 
 local function TouchParents(raidKey, encounterKey)
@@ -57,12 +70,14 @@ function Attributions:AddEncounter(raidKey, bossName)
     local instance = NS.TBCBosses and NS.TBCBosses:GetInstanceOf(bossName) or ""
 
     raid.encounters[encKey] = {
-        name         = bossName,
-        instance     = instance or "",
-        attributions = {},
-        order        = {},
-        updated      = NowTs(),
-        updatedBy    = CurrentPlayer(),
+        name           = bossName,
+        instance       = instance or "",
+        attributions   = {},
+        order          = {},
+        categories     = {},
+        categoryOrder  = {},
+        updated        = NowTs(),
+        updatedBy      = CurrentPlayer(),
     }
     raid.encounterOrder[#raid.encounterOrder + 1] = encKey
 
@@ -147,16 +162,24 @@ end
 ----------------------------------------------------------------------
 -- Add a blank attribution to an encounter
 ----------------------------------------------------------------------
-function Attributions:AddAttribution(raidKey, encounterKey, marker, context, players)
+function Attributions:AddAttribution(raidKey, encounterKey, marker, context, players, categoryId)
     local enc = GetEncounter(raidKey, encounterKey)
     if not enc then return nil end
 
+    -- Defensive: if a non-nil catId is passed but doesn't exist, drop
+    -- it so the attribution lands in Uncategorized instead of pointing
+    -- at a ghost category.
+    if categoryId ~= nil and not enc.categories[categoryId] then
+        categoryId = nil
+    end
+
     local attribId = NewId("attrib")
     enc.attributions[attribId] = {
-        marker  = marker,              -- nil or 1..8
-        context = context or "",
-        players = players or {},
-        note    = "",                  -- free-text multi-line note
+        marker     = marker,              -- nil or 1..8
+        context    = context or "",
+        players    = players or {},
+        note       = "",                  -- free-text multi-line note
+        categoryId = categoryId,          -- nil = Uncategorized
     }
     enc.order[#enc.order + 1] = attribId
     TouchParents(raidKey, encounterKey)
@@ -289,17 +312,34 @@ end
 function Attributions:MoveAttribution(raidKey, encounterKey, attribId, delta)
     local enc = GetEncounter(raidKey, encounterKey)
     if not enc then return end
+
+    -- Find the source position and the source attribution's category.
+    local fromIdx
     for i, k in ipairs(enc.order) do
-        if k == attribId then
-            local target = i + delta
-            if target < 1 or target > #enc.order then return end
-            table.remove(enc.order, i)
-            table.insert(enc.order, target, attribId)
+        if k == attribId then fromIdx = i; break end
+    end
+    if not fromIdx then return end
+
+    local sourceCat = enc.attributions[attribId] and enc.attributions[attribId].categoryId or nil
+
+    -- Walk in the requested direction until we find the next attribId
+    -- whose categoryId matches the source. delta is +1 (down) or -1 (up).
+    local step = (delta and delta > 0) and 1 or -1
+    local toIdx = fromIdx + step
+    while toIdx >= 1 and toIdx <= #enc.order do
+        local otherId  = enc.order[toIdx]
+        local otherAtt = enc.attributions[otherId]
+        local otherCat = otherAtt and otherAtt.categoryId or nil
+        if otherCat == sourceCat then
+            table.remove(enc.order, fromIdx)
+            table.insert(enc.order, toIdx, attribId)
             TouchParents(raidKey, encounterKey)
             NS:FireCallback("DATA_UPDATED")
             return
         end
+        toIdx = toIdx + step
     end
+    -- No same-category neighbour in the requested direction → no-op.
 end
 
 ----------------------------------------------------------------------
@@ -321,4 +361,126 @@ end
 function Attributions:FormatPlayerList(players)
     if not players or #players == 0 then return "" end
     return table.concat(players, ", ")
+end
+
+-- ====================================================================
+--  CATEGORIES (P1 / P2 / ... grouping inside an encounter)
+-- ====================================================================
+
+----------------------------------------------------------------------
+-- Add a category to a boss. Returns its catId.
+-- The category is appended to the end of categoryOrder.
+----------------------------------------------------------------------
+function Attributions:AddCategory(raidKey, encounterKey, name)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc or not name or name == "" then return nil end
+
+    local catId = NewId("cat")
+    enc.categories[catId] = {
+        name      = name,
+        updated   = NowTs(),
+        updatedBy = CurrentPlayer(),
+    }
+    enc.categoryOrder[#enc.categoryOrder + 1] = catId
+
+    TouchParents(raidKey, encounterKey)
+    NS:FireCallback("DATA_UPDATED")
+    return catId
+end
+
+----------------------------------------------------------------------
+-- Rename an existing category. No-op if name is empty or catId is
+-- unknown.
+----------------------------------------------------------------------
+function Attributions:RenameCategory(raidKey, encounterKey, catId, newName)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc or not catId or not newName or newName == "" then return end
+    local cat = enc.categories[catId]
+    if not cat then return end
+    cat.name      = newName
+    cat.updated   = NowTs()
+    cat.updatedBy = CurrentPlayer()
+    TouchParents(raidKey, encounterKey)
+    NS:FireCallback("DATA_UPDATED")
+end
+
+----------------------------------------------------------------------
+-- Delete a category. Any attribution whose categoryId points at the
+-- removed category has its categoryId reset to nil so it falls back
+-- to the Uncategorized bucket. The attributions themselves and their
+-- position in enc.order are untouched.
+----------------------------------------------------------------------
+function Attributions:DeleteCategory(raidKey, encounterKey, catId)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc or not catId or not enc.categories[catId] then return end
+
+    for _, attrib in pairs(enc.attributions) do
+        if attrib.categoryId == catId then
+            attrib.categoryId = nil
+        end
+    end
+
+    enc.categories[catId] = nil
+    for i, k in ipairs(enc.categoryOrder) do
+        if k == catId then table.remove(enc.categoryOrder, i); break end
+    end
+
+    TouchParents(raidKey, encounterKey)
+    NS:FireCallback("DATA_UPDATED")
+end
+
+----------------------------------------------------------------------
+-- Move a category up or down in categoryOrder.
+----------------------------------------------------------------------
+function Attributions:MoveCategory(raidKey, encounterKey, catId, delta)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc then return end
+    for i, k in ipairs(enc.categoryOrder) do
+        if k == catId then
+            local target = i + delta
+            if target < 1 or target > #enc.categoryOrder then return end
+            table.remove(enc.categoryOrder, i)
+            table.insert(enc.categoryOrder, target, catId)
+            TouchParents(raidKey, encounterKey)
+            NS:FireCallback("DATA_UPDATED")
+            return
+        end
+    end
+end
+
+----------------------------------------------------------------------
+-- Iterate categories in display order. Yields (catId, category).
+----------------------------------------------------------------------
+function Attributions:IterateCategories(raidKey, encounterKey)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc then return function() return nil end end
+    local order = enc.categoryOrder or {}
+    local i = 0
+    return function()
+        i = i + 1
+        local key = order[i]
+        if not key then return nil end
+        return key, enc.categories[key]
+    end
+end
+
+function Attributions:GetCategory(raidKey, encounterKey, catId)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc or not catId then return nil end
+    return enc.categories[catId]
+end
+
+----------------------------------------------------------------------
+-- Reassign an attribution to a category (or to "Uncategorized"
+-- when catId is nil). Does NOT change the attribution's position in
+-- enc.order: it stays where it is, just renders under a different
+-- section header.
+----------------------------------------------------------------------
+function Attributions:SetAttributionCategory(raidKey, encounterKey, attribId, catId)
+    local enc = GetEncounter(raidKey, encounterKey)
+    if not enc or not enc.attributions[attribId] then return end
+    if catId ~= nil and not enc.categories[catId] then return end
+    enc.attributions[attribId].categoryId = catId
+    TouchParents(raidKey, encounterKey)
+    NS:FireCallback("DATA_UPDATED")
 end

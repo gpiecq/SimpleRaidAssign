@@ -11,6 +11,7 @@ Create named raid plans, add TBC bosses from a built-in dropdown, fill each boss
 ## Features
 
 - **Raid plans as first-class objects.** Each raid has a name (e.g. "SSC Tuesday Farm"), a creation timestamp, an author, and an ordered list of bosses. You can create, rename, duplicate, **export**, **import** or delete raids from the home screen.
+- **Optional categories per boss.** Group attributions into named foldable sections (`P1`, `P2`, `Adds`, `Burn`, ...). The `[Announce]` button then emits **one chat message per category** titled `[Boss - CategoryName]`, in display order, plus a leading `[Boss]` line for the implicit Uncategorized bucket. Per-category announce checkboxes (tri-state) let you skip a whole phase in one click. Bosses with no category render and announce exactly like in v1.1.
 - **Raid Summary home screen.** All saved raid plans, sorted by last edit, with per-card counters: number of bosses, total attributions, and **distinct** assigned players (a player on multiple bosses is counted once).
 - **TBC boss dropdown.** Adding a boss picks from a built-in list of every TBC raid boss grouped by instance (Karazhan, Gruul, Magtheridon, SSC, Tempest Keep, Mount Hyjal, Black Temple, Zul'Aman, Sunwell Plateau). The instance name is auto-filled from the boss.
 - **Attribution-based model.** An attribution is a `{ marker, players, context, note }` quadruple:
@@ -67,6 +68,7 @@ bash package.sh
 2. Click **`+ New Raid`**, give it a name → you enter the **Raid Editor**.
 3. Click **`+ Add Boss`** in the left sidebar and pick a TBC boss from the two-level dropdown (instance → boss).
 4. Click **`+ Add Attribution`** in the middle column → a blank attribution appears and is automatically selected.
+   - **Optional categories.** If you want to split the boss into phases (P1, P2, ...), click **`+ Add Category`** next to the `Select all` checkbox, pick a preset (or `Custom...`) and use the per-category **`+ Attrib`** button to add attributions inside it. Use the **`Category:`** dropdown in the right edit panel to move an existing attribution between categories. Each header has `^/v` to reorder, `R` (or double-click) to rename, `X` to delete (moves attribs to Uncategorized when non-empty), and a chevron to fold/unfold.
 5. In the right edit panel:
    - Pick a **marker** from the dropdown (or leave it as `(none)`, or hit `[X]` to clear)
    - Type the **context** (e.g. "Tanks", "Kick phase 1") and click outside the field to commit
@@ -82,10 +84,12 @@ bash package.sh
 
 ### Example announce
 
-For an Illidan plan with 5 attributions, the addon sends:
+For an Illidan plan with phases P1, P2 and a couple of uncategorised tanks, the addon sends:
 
 ```
-[Illidan Stormrage] Tanks: TankA, TankB / Heals: HA, HB, HC / {rt8} Kick phase 1: IntA, IntB (focus interrupter demo) / {rt7} Flame tank phase 2: TankC / {rt6} Parasite kite: HealerX
+[Illidan Stormrage] Tanks: TankA, TankB / Heals: HA, HB, HC
+[Illidan Stormrage - P1] {rt8} Kick: IntA, IntB (focus interrupter demo)
+[Illidan Stormrage - P2] {rt7} Flame tank: TankC / {rt6} Parasite kite: HealerX
 ```
 
 - The `{rt8}` `{rt7}` `{rt6}` tokens are converted by WoW's chat parser into the actual in-game raid target icons on the receivers' chat windows.

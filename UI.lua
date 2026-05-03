@@ -169,6 +169,105 @@ local function SetAllAttribsSelected(raidKey, encounterKey, state)
     end
 end
 
+----------------------------------------------------------------------
+-- Per-character fold state for category sections.
+-- Stored in the existing CHAR_DEFAULTS.ui.collapsed slot, keyed by
+-- "<raidKey>:<encKey>:<catId>" (or "...:__uncategorized__"). A key
+-- mapping to a truthy value means the section is collapsed; absent or
+-- false means expanded.
+----------------------------------------------------------------------
+local UNCAT_KEY = "__uncategorized__"
+
+local function FoldKey(raidKey, encKey, catIdOrNil)
+    return string.format("%s:%s:%s", raidKey or "?", encKey or "?", catIdOrNil or UNCAT_KEY)
+end
+
+local function GetCollapsedTable()
+    if not NS.charDb then return nil end
+    NS.charDb.ui = NS.charDb.ui or {}
+    NS.charDb.ui.collapsed = NS.charDb.ui.collapsed or {}
+    return NS.charDb.ui.collapsed
+end
+
+local function IsSectionFolded(raidKey, encKey, catIdOrNil)
+    local t = GetCollapsedTable()
+    if not t then return false end
+    return t[FoldKey(raidKey, encKey, catIdOrNil)] == true
+end
+
+local function SetSectionFolded(raidKey, encKey, catIdOrNil, folded)
+    local t = GetCollapsedTable()
+    if not t then return end
+    if folded then
+        t[FoldKey(raidKey, encKey, catIdOrNil)] = true
+    else
+        t[FoldKey(raidKey, encKey, catIdOrNil)] = nil
+    end
+end
+
+----------------------------------------------------------------------
+-- Drop fold-state entries whose <raidKey>:<encKey> prefix no longer
+-- corresponds to an existing encounter. Idempotent.
+----------------------------------------------------------------------
+local function GCFoldState()
+    local t = GetCollapsedTable()
+    if not t or not NS.db or not NS.db.raids then return end
+    for key in pairs(t) do
+        local raidKey, encKey = key:match("^([^:]+):([^:]+):")
+        local raid = raidKey and NS.db.raids[raidKey]
+        local exists = raid and raid.encounters and encKey and raid.encounters[encKey]
+        if not exists then t[key] = nil end
+    end
+end
+
+NS:RegisterCallback("ADDON_LOADED", GCFoldState)
+
+----------------------------------------------------------------------
+-- Compute the announce-selection state of a category as a tri-state:
+--   "all"  -> every attribution in the bucket is selected
+--   "none" -> none are selected (or the bucket is empty)
+--   "some" -> mixed
+----------------------------------------------------------------------
+local function CategorySelectionState(attribIds)
+    if not attribIds or #attribIds == 0 then return "none" end
+    local checked, unchecked = 0, 0
+    for _, id in ipairs(attribIds) do
+        if IsAttribSelected(id) then checked = checked + 1
+        else                          unchecked = unchecked + 1 end
+    end
+    if unchecked == 0 then return "all"  end
+    if checked   == 0 then return "none" end
+    return "some"
+end
+
+local function ApplyCategorySelection(attribIds, state)
+    if not attribIds then return end
+    for _, id in ipairs(attribIds) do
+        SetAttribSelected(id, state and true or false)
+    end
+end
+
+----------------------------------------------------------------------
+-- Visualise a tri-state checkbox. TBC's UICheckButtonTemplate has no
+-- native mixed state, so we approximate "some" by leaving the box
+-- checked but dimming its checked texture's vertex colour.
+----------------------------------------------------------------------
+local function ApplyTriState(check, state)
+    if state == "all" then
+        check:SetChecked(true)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(1, 1, 1, 1) end
+    elseif state == "some" then
+        check:SetChecked(true)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(0.6, 0.6, 0.6, 0.7) end
+    else
+        check:SetChecked(false)
+        local tex = check:GetCheckedTexture()
+        if tex then tex:SetVertexColor(1, 1, 1, 1) end
+    end
+end
+
 local function BuildSelectedFilter(raidKey, encounterKey)
     local filter = {}
     local any = false
@@ -332,6 +431,56 @@ StaticPopupDialogs["SRA_DELETE_ENCOUNTER"] = {
             Refresh()
         end
     end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["SRA_DELETE_CATEGORY"] = {
+    text = "Delete category '%s' and move %d attributions to Uncategorized?",
+    button1 = "Delete",
+    button2 = "Cancel",
+    OnAccept = function(self, data)
+        if data and NS.Attributions then
+            NS.Attributions:DeleteCategory(data.raidKey, data.encKey, data.catId)
+        end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["SRA_NEW_CATEGORY"] = {
+    text = "New category name:",
+    button1 = "Create",
+    button2 = "Cancel",
+    hasEditBox = true,
+    maxLetters = 32,
+    OnShow = function(self)
+        local eb = PopupEditBox(self)
+        if eb then eb:SetText(""); eb:SetFocus() end
+    end,
+    OnAccept = function(self, data)
+        local eb = PopupEditBox(self)
+        local name = eb and eb:GetText() or ""
+        name = strtrim(name or "")
+        if name == "" or not data then return end
+        if NS.Attributions then
+            NS.Attributions:AddCategory(data.raidKey, data.encKey, name)
+        end
+    end,
+    EditBoxOnEnterPressed = function(self)
+        local parent = self:GetParent()
+        local data   = parent.data
+        local name   = strtrim(self:GetText() or "")
+        if name ~= "" and data and NS.Attributions then
+            NS.Attributions:AddCategory(data.raidKey, data.encKey, name)
+        end
+        parent:Hide()
+    end,
+    EditBoxOnEscapePressed = function(self) self:GetParent():Hide() end,
     timeout = 0,
     whileDead = true,
     hideOnEscape = true,
@@ -628,11 +777,20 @@ local function BuildEditorView(parent)
     masterCheck:SetPoint("TOPLEFT", 6, -38)
     masterCheck:SetScript("OnClick", function(self)
         if not currentRaidKey or not currentEncounterKey then
-            self:SetChecked(false)
-            return
+            self:SetChecked(false); return
         end
-        local newState = self:GetChecked() and true or false
-        SetAllAttribsSelected(currentRaidKey, currentEncounterKey, newState)
+        local checked, unchecked = 0, 0
+        for attribId in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
+            if IsAttribSelected(attribId) then checked = checked + 1
+            else                                unchecked = unchecked + 1 end
+        end
+        local state
+        if checked == 0 and unchecked == 0 then state = "none"
+        elseif unchecked == 0              then state = "all"
+        elseif checked   == 0              then state = "none"
+        else                                     state = "some" end
+        local newSelected = (state ~= "all")
+        SetAllAttribsSelected(currentRaidKey, currentEncounterKey, newSelected)
         Refresh()
     end)
     attribPanel.masterCheck = masterCheck
@@ -641,6 +799,15 @@ local function BuildEditorView(parent)
     masterLabel:SetPoint("LEFT", masterCheck, "RIGHT", 2, 0)
     masterLabel:SetText("Select all / none")
     masterLabel:SetTextColor(unpack(COLOURS.dim))
+
+    local addCategoryBtn = CreateFrame("Button", nil, attribPanel, "UIPanelButtonTemplate")
+    addCategoryBtn:SetSize(110, 20)
+    addCategoryBtn:SetPoint("LEFT", masterLabel, "RIGHT", 12, 0)
+    addCategoryBtn:SetText("+ Add Category")
+    addCategoryBtn:SetScript("OnClick", function()
+        if not currentRaidKey or not currentEncounterKey then return end
+        UI:OpenCategoryPicker()
+    end)
 
     local addAttribBtn = CreateFrame("Button", nil, attribPanel, "UIPanelButtonTemplate")
     addAttribBtn:SetSize(130, 20)
@@ -735,10 +902,11 @@ local function BuildEditorView(parent)
     attribScroll:SetScrollChild(attribContent)
     AutoSizeScrollChild(attribScroll, attribContent)
 
-    attribPanel.scroll   = attribScroll
-    attribPanel.content  = attribContent
-    attribPanel.rows     = {}
-    view.attribPanel     = attribPanel
+    attribPanel.scroll      = attribScroll
+    attribPanel.content     = attribContent
+    attribPanel.rows        = {}    -- attribution rows
+    attribPanel.headerRows  = {}    -- category header rows
+    view.attribPanel        = attribPanel
 
     -- Right: edit panel
     local editPanel = MakePanel(view)
@@ -817,15 +985,26 @@ local function BuildEditorView(parent)
     end)
     clearMarkerBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Category dropdown
+    local categoryLabel = FS(editPanel, 10)
+    categoryLabel:SetPoint("TOPLEFT", 10, -62)
+    categoryLabel:SetText("Category:")
+    categoryLabel:SetTextColor(unpack(COLOURS.dim))
+
+    local categoryDrop = CreateFrame("Frame", "SRACategoryAttribDropdown", editPanel, "UIDropDownMenuTemplate")
+    categoryDrop:SetPoint("TOPLEFT", 4, -78)
+    UIDropDownMenu_SetWidth(categoryDrop, 180)
+    editPanel.categoryDrop = categoryDrop
+
     -- Context text
     local contextLabel = FS(editPanel, 10)
-    contextLabel:SetPoint("TOPLEFT", 10, -88)
+    contextLabel:SetPoint("TOPLEFT", 10, -112)
     contextLabel:SetText("Context:")
     contextLabel:SetTextColor(unpack(COLOURS.dim))
 
     local contextBox = CreateFrame("EditBox", nil, editPanel, "InputBoxTemplate")
     contextBox:SetSize(220, 22)
-    contextBox:SetPoint("TOPLEFT", 16, -104)
+    contextBox:SetPoint("TOPLEFT", 16, -128)
     contextBox:SetAutoFocus(false)
     contextBox:SetMaxLetters(120)
     contextBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -844,14 +1023,14 @@ local function BuildEditorView(parent)
     -- remove X button), plus an input + Add button + From Group
     -- dropdown trigger underneath for adding new ones.
     local playersLabel = FS(editPanel, 10)
-    playersLabel:SetPoint("TOPLEFT", 10, -136)
+    playersLabel:SetPoint("TOPLEFT", 10, -160)
     playersLabel:SetText("Players:")
     playersLabel:SetTextColor(unpack(COLOURS.dim))
 
     -- List backdrop / container
     local playersBg = MakePanel(editPanel)
-    playersBg:SetPoint("TOPLEFT", 16, -152)
-    playersBg:SetPoint("TOPRIGHT", -16, -152)
+    playersBg:SetPoint("TOPLEFT", 16, -176)
+    playersBg:SetPoint("TOPRIGHT", -16, -176)
     playersBg:SetHeight(96)
 
     local playersScroll = CreateFrame("ScrollFrame", nil, playersBg, "UIPanelScrollFrameTemplate")
@@ -873,7 +1052,7 @@ local function BuildEditorView(parent)
     -- comfortably inside the edit panel (which is only ~270 px wide).
     local playersInput = CreateFrame("EditBox", nil, editPanel, "InputBoxTemplate")
     playersInput:SetSize(170, 22)
-    playersInput:SetPoint("TOPLEFT", 16, -256)
+    playersInput:SetPoint("TOPLEFT", 16, -280)
     playersInput:SetAutoFocus(false)
     playersInput:SetMaxLetters(32)
 
@@ -918,13 +1097,13 @@ local function BuildEditorView(parent)
     -- multi-line EditBox wrapped in a ScrollFrame with a backdrop
     -- frame behind it to give the illusion of a "textarea" control.
     local noteLabel = FS(editPanel, 10)
-    noteLabel:SetPoint("TOPLEFT", 10, -316)
+    noteLabel:SetPoint("TOPLEFT", 10, -340)
     noteLabel:SetText("Note:")
     noteLabel:SetTextColor(unpack(COLOURS.dim))
 
     local noteBg = MakePanel(editPanel)
-    noteBg:SetPoint("TOPLEFT", 16, -332)
-    noteBg:SetPoint("TOPRIGHT", -16, -332)
+    noteBg:SetPoint("TOPLEFT", 16, -356)
+    noteBg:SetPoint("TOPRIGHT", -16, -356)
     noteBg:SetHeight(110)
 
     local noteScroll = CreateFrame("ScrollFrame", "SRANoteScroll", noteBg, "UIPanelScrollFrameTemplate")
@@ -1076,6 +1255,57 @@ function UI:OpenBossPicker()
         bossPickerFrame = CreateFrame("Frame", "SRABossPickerMenu", UIParent, "UIDropDownMenuTemplate")
     end
     ShowEasyMenu(menu, bossPickerFrame, "cursor", 0, 0, "MENU")
+end
+
+----------------------------------------------------------------------
+-- Category presets dropdown. Selecting a preset creates the category
+-- immediately. Selecting "Custom..." opens SRA_NEW_CATEGORY.
+----------------------------------------------------------------------
+local CATEGORY_PRESETS = {
+    "P1", "P2", "P3", "P4",
+    "Pull", "Adds", "Burn", "Transition", "Heroism",
+}
+
+local categoryPickerFrame
+
+function UI:OpenCategoryPicker(onPick)
+    if not currentRaidKey or not currentEncounterKey then return end
+
+    local menu = {}
+    for _, name in ipairs(CATEGORY_PRESETS) do
+        local capturedName = name
+        menu[#menu + 1] = {
+            text         = capturedName,
+            notCheckable = true,
+            func         = function()
+                if NS.Attributions then
+                    local catId = NS.Attributions:AddCategory(
+                        currentRaidKey, currentEncounterKey, capturedName)
+                    if onPick then onPick(catId) end
+                end
+            end,
+        }
+    end
+    menu[#menu + 1] = { text = "", notCheckable = true, disabled = true }
+    menu[#menu + 1] = {
+        text         = "Custom...",
+        notCheckable = true,
+        func         = function()
+            local dialog = StaticPopup_Show("SRA_NEW_CATEGORY")
+            if dialog then
+                dialog.data = {
+                    raidKey = currentRaidKey,
+                    encKey  = currentEncounterKey,
+                    onPick  = onPick,
+                }
+            end
+        end,
+    }
+
+    if not categoryPickerFrame then
+        categoryPickerFrame = CreateFrame("Frame", "SRACategoryPickerMenu", UIParent, "UIDropDownMenuTemplate")
+    end
+    ShowEasyMenu(menu, categoryPickerFrame, "cursor", 0, 0, "MENU")
 end
 
 ----------------------------------------------------------------------
@@ -1416,6 +1646,92 @@ end
 ----------------------------------------------------------------------
 -- Attribution row (middle column)
 ----------------------------------------------------------------------
+----------------------------------------------------------------------
+-- Build a section header row for a category (or for the implicit
+-- Uncategorized bucket when `isUncategorized` is true).
+--
+-- All interactive children are created here but their OnClick handlers
+-- are wired in RefreshAttribList per-call (they need closures over the
+-- current catId / raidKey / encKey).
+----------------------------------------------------------------------
+local function BuildCategoryHeaderRow(parent)
+    local row = CreateFrame("Frame", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    if not row.SetBackdrop and BackdropTemplateMixin then
+        Mixin(row, BackdropTemplateMixin)
+    end
+    if row.SetBackdrop then
+        row:SetBackdrop({
+            bgFile   = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Buttons\\WHITE8x8",
+            edgeSize = 1,
+        })
+        -- Slightly tinted blue band so the header stands out visually
+        -- against the attribution rows regardless of the active skin
+        -- (ElvUI's Transparent template makes plain Frames invisible).
+        row:SetBackdropColor(0.05, 0.10, 0.18, 0.95)
+        row:SetBackdropBorderColor(unpack(COLOURS.border))
+    end
+    row:SetHeight(24)
+    row.kind = "header"
+
+    -- Chevron toggle
+    row.chevron = CreateFrame("Button", nil, row)
+    row.chevron:SetSize(16, 16)
+    row.chevron:SetPoint("LEFT", 4, 0)
+    row.chevron.label = FS(row.chevron, 12)
+    row.chevron.label:SetAllPoints()
+    row.chevron.label:SetJustifyH("CENTER")
+    row.chevron.label:SetText("v")
+
+    -- Tri-state announce checkbox
+    row.selectCheck = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.selectCheck:SetSize(18, 18)
+    row.selectCheck:SetPoint("LEFT", row.chevron, "RIGHT", 4, 0)
+
+    -- Name label
+    row.label = FS(row, 12)
+    row.label:SetPoint("LEFT", row.selectCheck, "RIGHT", 4, 0)
+    row.label:SetJustifyH("LEFT")
+    row.label:SetWordWrap(false)
+    row.label:SetTextColor(unpack(COLOURS.accent))
+
+    -- Inline rename EditBox (hidden by default, toggled on double-click)
+    row.renameBox = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
+    row.renameBox:SetSize(120, 18)
+    row.renameBox:SetPoint("LEFT", row.selectCheck, "RIGHT", 4, 0)
+    row.renameBox:SetAutoFocus(false)
+    row.renameBox:SetMaxLetters(32)
+    row.renameBox:Hide()
+
+    -- Right-aligned button cluster
+    row.addAttribBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.addAttribBtn:SetSize(70, 18)
+    row.addAttribBtn:SetPoint("RIGHT", -4, 0)
+    row.addAttribBtn:SetText("+ Attrib")
+
+    row.deleteBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.deleteBtn:SetSize(22, 18)
+    row.deleteBtn:SetPoint("RIGHT", row.addAttribBtn, "LEFT", -2, 0)
+    row.deleteBtn:SetText("X")
+
+    row.renameBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.renameBtn:SetSize(22, 18)
+    row.renameBtn:SetPoint("RIGHT", row.deleteBtn, "LEFT", -2, 0)
+    row.renameBtn:SetText("R")
+
+    row.downBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.downBtn:SetSize(18, 18)
+    row.downBtn:SetPoint("RIGHT", row.renameBtn, "LEFT", -2, 0)
+    row.downBtn:SetText("v")
+
+    row.upBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+    row.upBtn:SetSize(18, 18)
+    row.upBtn:SetPoint("RIGHT", row.downBtn, "LEFT", -2, 0)
+    row.upBtn:SetText("^")
+
+    return row
+end
+
 local function BuildAttribRow(parent)
     local row = CreateFrame("Button", nil, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
     SkinFrame(row)
@@ -1444,11 +1760,39 @@ local function BuildAttribRow(parent)
     return row
 end
 
+----------------------------------------------------------------------
+-- Walk enc.order once and bucket attribIds by their categoryId.
+-- Returns:
+--   uncatIds : array of attribIds with categoryId == nil
+--   buckets  : table { [catId] = { attribId1, ... } }
+-- Both arrays preserve enc.order's relative order.
+-- Attributions whose categoryId points at an unknown category fall
+-- back to the uncatIds bucket (defensive).
+----------------------------------------------------------------------
+local function BucketAttribsByCategory(raidKey, encKey)
+    local uncatIds, buckets = {}, {}
+    if not NS.Attributions then return uncatIds, buckets end
+    local enc = NS.Attributions:GetEncounter(raidKey, encKey)
+    if not enc then return uncatIds, buckets end
+
+    for attribId, attrib in NS.Attributions:IterateAttributions(raidKey, encKey) do
+        local cid = attrib.categoryId
+        if cid == nil or not enc.categories[cid] then
+            uncatIds[#uncatIds + 1] = attribId
+        else
+            buckets[cid] = buckets[cid] or {}
+            buckets[cid][#buckets[cid] + 1] = attribId
+        end
+    end
+    return uncatIds, buckets
+end
+
 local function RefreshAttribList()
     local panel = editorView and editorView.attribPanel
     if not panel then return end
 
-    for _, row in ipairs(panel.rows) do row:Hide() end
+    for _, row in ipairs(panel.rows)       do row:Hide() end
+    for _, row in ipairs(panel.headerRows) do row:Hide() end
 
     if not currentRaidKey or not currentEncounterKey then
         panel.header:SetText("Attributions")
@@ -1465,14 +1809,17 @@ local function RefreshAttribList()
 
     panel.header:SetText("Attributions - " .. (enc.name or "?"))
 
+    local uncatIds, buckets = BucketAttribsByCategory(currentRaidKey, currentEncounterKey)
+
     local y = 0
-    local i = 0
-    for attribId, attrib in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
-        i = i + 1
-        local row = panel.rows[i]
+    local attribIdx, headerIdx = 0, 0
+
+    local function renderAttribRow(attribId, attrib, indent)
+        attribIdx = attribIdx + 1
+        local row = panel.rows[attribIdx]
         if not row then
             row = BuildAttribRow(panel.content)
-            panel.rows[i] = row
+            panel.rows[attribIdx] = row
         end
 
         if attrib.marker and NS.Data then
@@ -1499,25 +1846,17 @@ local function RefreshAttribList()
             row.players:SetText("|cff888888(no players)|r")
         end
 
-        -- Selection highlighting via backdrop color
         if currentAttribKey == attribId then
             if row.SetBackdropColor then row:SetBackdropColor(unpack(COLOURS.rowActive)) end
         else
             if row.SetBackdropColor then row:SetBackdropColor(unpack(COLOURS.bg)) end
         end
 
-        -- Per-row "include in announce" checkbox state and handler.
-        -- The checkbox lives on the row but its OnClick consumes the
-        -- click, so toggling it does NOT also fire the row's OnClick
-        -- (which would change the currently-selected attribution).
         row.selectCheck:SetChecked(IsAttribSelected(attribId))
         local capturedId = attribId
         row.selectCheck:SetScript("OnClick", function(self)
             SetAttribSelected(capturedId, self:GetChecked() and true or false)
-            -- Refresh the master checkbox state without rebuilding rows
-            if panel.masterCheck then
-                panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
-            end
+            Refresh()
         end)
 
         row:SetScript("OnClick", function()
@@ -1527,17 +1866,194 @@ local function RefreshAttribList()
         end)
 
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", panel.content, "TOPLEFT", 0, -y)
-        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0, -y)
+        row:SetPoint("TOPLEFT",  panel.content, "TOPLEFT",  indent, -y)
+        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0,      -y)
         row:Show()
         y = y + 52
     end
+
+    local function renderHeaderRow(catId, name, isUncategorized)
+        headerIdx = headerIdx + 1
+        local row = panel.headerRows[headerIdx]
+        if not row then
+            row = BuildCategoryHeaderRow(panel.content)
+            panel.headerRows[headerIdx] = row
+        end
+        row.label:SetText(name)
+        row.label:Show()
+        row.renameBox:Hide()
+
+        local capFoldId = catId  -- nil for the Uncategorized header
+        local folded = IsSectionFolded(currentRaidKey, currentEncounterKey, capFoldId)
+        row.chevron.label:SetText(folded and ">" or "v")
+        row.chevron:Show()
+        row.chevron:SetScript("OnClick", function()
+            SetSectionFolded(currentRaidKey, currentEncounterKey, capFoldId, not folded)
+            Refresh()
+        end)
+
+        -- Per-category tri-state checkbox
+        local catBucket
+        if isUncategorized then
+            catBucket = uncatIds
+        else
+            catBucket = buckets[capFoldId] or {}
+        end
+        local catState = CategorySelectionState(catBucket)
+        ApplyTriState(row.selectCheck, catState)
+        row.selectCheck:Show()
+        row.selectCheck:SetScript("OnClick", function(self)
+            local current = CategorySelectionState(catBucket)
+            local newSelected = (current ~= "all")
+            ApplyCategorySelection(catBucket, newSelected)
+            Refresh()
+        end)
+
+        if isUncategorized then
+            row.label:SetTextColor(unpack(COLOURS.dim))
+            row.upBtn:Hide()
+            row.downBtn:Hide()
+            row.renameBtn:Hide()
+            row.deleteBtn:Hide()
+            row.addAttribBtn:Hide()
+        else
+            row.label:SetTextColor(unpack(COLOURS.accent))
+
+            local capCatId = catId
+
+            -- Reorder
+            row.upBtn:Show()
+            row.upBtn:SetScript("OnClick", function()
+                if NS.Attributions then
+                    NS.Attributions:MoveCategory(currentRaidKey, currentEncounterKey, capCatId, -1)
+                end
+            end)
+            row.downBtn:Show()
+            row.downBtn:SetScript("OnClick", function()
+                if NS.Attributions then
+                    NS.Attributions:MoveCategory(currentRaidKey, currentEncounterKey, capCatId, 1)
+                end
+            end)
+
+            -- Rename: ✎ (R) button or double-click on the label
+            local function startRename()
+                row.label:Hide()
+                row.renameBox:SetText(name)
+                row.renameBox:Show()
+                row.renameBox:SetFocus()
+                row.renameBox:HighlightText()
+            end
+            row.renameBtn:Show()
+            row.renameBtn:SetScript("OnClick", startRename)
+            row.renameBox:SetScript("OnEnterPressed", function(self)
+                local newName = strtrim(self:GetText() or "")
+                self:ClearFocus()
+                if newName ~= "" and NS.Attributions then
+                    NS.Attributions:RenameCategory(currentRaidKey, currentEncounterKey, capCatId, newName)
+                end
+                self:Hide()
+                row.label:Show()
+            end)
+            row.renameBox:SetScript("OnEscapePressed", function(self)
+                self:ClearFocus()
+                self:Hide()
+                row.label:Show()
+            end)
+            row.renameBox:SetScript("OnEditFocusLost", function(self)
+                self:Hide()
+                row.label:Show()
+            end)
+
+            -- Double-click on label uses an overlay Button (FontString
+            -- has no OnMouseDown / OnDoubleClick on TBC).
+            if not row.labelClick then
+                row.labelClick = CreateFrame("Button", nil, row)
+                row.labelClick:RegisterForClicks("LeftButtonUp")
+            end
+            row.labelClick:ClearAllPoints()
+            row.labelClick:SetAllPoints(row.label)
+            row.labelClick:SetScript("OnDoubleClick", function() startRename() end)
+            row.labelClick:Show()
+
+            -- Delete: silent on empty, popup on non-empty
+            row.deleteBtn:Show()
+            row.deleteBtn:SetScript("OnClick", function()
+                local count = #(buckets[capCatId] or {})
+                if count == 0 then
+                    if NS.Attributions then
+                        NS.Attributions:DeleteCategory(currentRaidKey, currentEncounterKey, capCatId)
+                    end
+                else
+                    local dlg = StaticPopup_Show("SRA_DELETE_CATEGORY", name, count)
+                    if dlg then
+                        dlg.data = {
+                            raidKey = currentRaidKey,
+                            encKey  = currentEncounterKey,
+                            catId   = capCatId,
+                        }
+                    end
+                end
+            end)
+
+            row.addAttribBtn:Show()
+            row.addAttribBtn:SetScript("OnClick", function()
+                if not (currentRaidKey and currentEncounterKey and NS.Attributions) then return end
+                CommitPendingEdits()
+                local newId = NS.Attributions:AddAttribution(
+                    currentRaidKey, currentEncounterKey,
+                    nil, "", {}, capCatId
+                )
+                currentAttribKey = newId
+                -- Force the section open so the new attribution is visible
+                SetSectionFolded(currentRaidKey, currentEncounterKey, capCatId, false)
+                Refresh()
+            end)
+        end
+
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT",  panel.content, "TOPLEFT",  0, -y)
+        row:SetPoint("TOPRIGHT", panel.content, "TOPRIGHT", 0, -y)
+        row:Show()
+        y = y + 26
+    end
+
+    -- 1. Uncategorized first (only if non-empty)
+    if #uncatIds > 0 then
+        renderHeaderRow(nil, "- Uncategorized -", true)
+        if not IsSectionFolded(currentRaidKey, currentEncounterKey, nil) then
+            for _, attribId in ipairs(uncatIds) do
+                local attrib = enc.attributions[attribId]
+                if attrib then renderAttribRow(attribId, attrib, 0) end
+            end
+        end
+    end
+
+    -- 2. Each category in categoryOrder
+    for catId, cat in NS.Attributions:IterateCategories(currentRaidKey, currentEncounterKey) do
+        renderHeaderRow(catId, cat.name or "?", false)
+        if not IsSectionFolded(currentRaidKey, currentEncounterKey, catId) then
+            local ids = buckets[catId] or {}
+            for _, attribId in ipairs(ids) do
+                local attrib = enc.attributions[attribId]
+                if attrib then renderAttribRow(attribId, attrib, 20) end
+            end
+        end
+    end
+
     panel.content:SetHeight(math.max(1, y))
 
-    -- Sync the master checkbox: checked iff every attribution is
-    -- selected (and there is at least one).
     if panel.masterCheck then
-        panel.masterCheck:SetChecked(AreAllAttribsSelected(currentRaidKey, currentEncounterKey))
+        local checked, unchecked = 0, 0
+        for attribId in NS.Attributions:IterateAttributions(currentRaidKey, currentEncounterKey) do
+            if IsAttribSelected(attribId) then checked = checked + 1
+            else                                unchecked = unchecked + 1 end
+        end
+        local masterState
+        if checked == 0 and unchecked == 0 then masterState = "none"
+        elseif unchecked == 0              then masterState = "all"
+        elseif checked   == 0              then masterState = "none"
+        else                                     masterState = "some" end
+        ApplyTriState(panel.masterCheck, masterState)
     end
 end
 
@@ -1666,6 +2182,9 @@ local function RefreshEditPanel()
         SafeSetText(panel.playersInput, "")
         UIDropDownMenu_SetSelectedValue(panel.markerDrop, 0)
         UIDropDownMenu_SetText(panel.markerDrop, "|cff888888(none)|r")
+        if panel.categoryDrop then
+            UIDropDownMenu_SetText(panel.categoryDrop, "|cff888888(none)|r")
+        end
         panel.contextBox:Disable()
         if panel.playersInput then panel.playersInput:Disable() end
         if panel.noteBox then panel.noteBox:Disable() end
@@ -1690,6 +2209,67 @@ local function RefreshEditPanel()
     else
         UIDropDownMenu_SetSelectedValue(panel.markerDrop, 0)
         UIDropDownMenu_SetText(panel.markerDrop, "|cff888888(none)|r")
+    end
+
+    -- Refresh the category dropdown
+    if panel.categoryDrop then
+        UIDropDownMenu_Initialize(panel.categoryDrop, function(self, level)
+            local none = UIDropDownMenu_CreateInfo()
+            none.text         = "|cff888888(none)|r"
+            none.notCheckable = true
+            none.func = function()
+                if NS.Attributions and currentRaidKey and currentEncounterKey and currentAttribKey then
+                    NS.Attributions:SetAttributionCategory(
+                        currentRaidKey, currentEncounterKey, currentAttribKey, nil)
+                    UIDropDownMenu_SetText(panel.categoryDrop, "|cff888888(none)|r")
+                end
+            end
+            UIDropDownMenu_AddButton(none, level)
+
+            if NS.Attributions and currentRaidKey and currentEncounterKey then
+                for catId, cat in NS.Attributions:IterateCategories(currentRaidKey, currentEncounterKey) do
+                    local capId, capName = catId, cat.name or "?"
+                    local info = UIDropDownMenu_CreateInfo()
+                    info.text         = capName
+                    info.value        = capId
+                    info.notCheckable = true
+                    info.func = function()
+                        if NS.Attributions and currentRaidKey and currentEncounterKey and currentAttribKey then
+                            NS.Attributions:SetAttributionCategory(
+                                currentRaidKey, currentEncounterKey, currentAttribKey, capId)
+                            UIDropDownMenu_SetText(panel.categoryDrop, capName)
+                        end
+                    end
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end
+
+            local sep = UIDropDownMenu_CreateInfo()
+            sep.text = ""; sep.notCheckable = true; sep.disabled = true
+            UIDropDownMenu_AddButton(sep, level)
+
+            local newOne = UIDropDownMenu_CreateInfo()
+            newOne.text         = "+ New Category..."
+            newOne.notCheckable = true
+            newOne.func = function()
+                local capturedAttrib = currentAttribKey
+                UI:OpenCategoryPicker(function(newCatId)
+                    if newCatId and NS.Attributions and currentRaidKey and currentEncounterKey then
+                        NS.Attributions:SetAttributionCategory(
+                            currentRaidKey, currentEncounterKey, capturedAttrib, newCatId)
+                    end
+                end)
+            end
+            UIDropDownMenu_AddButton(newOne, level)
+        end)
+
+        local currentLabel = "|cff888888(none)|r"
+        if attrib.categoryId then
+            local cat = NS.Attributions:GetCategory(
+                currentRaidKey, currentEncounterKey, attrib.categoryId)
+            if cat then currentLabel = cat.name or "?" end
+        end
+        UIDropDownMenu_SetText(panel.categoryDrop, currentLabel)
     end
 end
 

@@ -119,18 +119,29 @@ local function FormatSegment(attrib)
 end
 
 ----------------------------------------------------------------------
--- Build the full list of segments for a boss, ordered as the user sees
--- them in the UI (follows enc.order).
+-- Build segments for a boss, optionally restricted to a single
+-- category bucket.
 --
--- `filter` is an optional set { [attribId] = true }. When provided,
--- only attributions whose id is present in the set are included. When
--- nil, every attribution is included (legacy behavior).
+--   filter         : optional set { [attribId] = true } as before.
+--   categoryFilter : nil → include every attribution (legacy);
+--                    "uncategorized" → include only attribs with
+--                       attribution.categoryId == nil;
+--                    "<catId>"      → include only attribs whose
+--                       categoryId matches.
 ----------------------------------------------------------------------
-function Broadcast:BuildSegments(raidKey, encounterKey, filter)
+function Broadcast:BuildSegments(raidKey, encounterKey, filter, categoryFilter)
     local segments = {}
     if not NS.Attributions then return segments end
     for attribId, attrib in NS.Attributions:IterateAttributions(raidKey, encounterKey) do
-        if not filter or filter[attribId] then
+        local match
+        if categoryFilter == nil then
+            match = true
+        elseif categoryFilter == "uncategorized" then
+            match = (attrib.categoryId == nil)
+        else
+            match = (attrib.categoryId == categoryFilter)
+        end
+        if match and (not filter or filter[attribId]) then
             segments[#segments + 1] = FormatSegment(attrib)
         end
     end
@@ -184,24 +195,49 @@ end
 Broadcast.ChunkMessages = ChunkMessages   -- exposed for tests/debug
 
 ----------------------------------------------------------------------
--- Build all chat-ready messages for a boss (always English).
--- The `_language` argument is accepted for backwards compatibility
--- with older callers but is otherwise ignored.
--- `filter` is an optional set of allowed attribution ids - see
--- BuildSegments for the semantics.
+-- Build all chat-ready messages for a boss. Emits:
+--   1. one block (possibly chunked) for the Uncategorized bucket if
+--      it has any selected segment;
+--   2. one block per category in enc.categoryOrder, with title
+--      "[Boss - CategoryName]".
+-- Categories with no surviving segment are silently skipped. If every
+-- block is empty, fall back to the legacy single-line "no attributions"
+-- message so the announce flow stays observable.
 ----------------------------------------------------------------------
 function Broadcast:BuildMessages(raidKey, encounterKey, filter)
     local enc = NS.Attributions and NS.Attributions:GetEncounter(raidKey, encounterKey)
     if not enc then return {} end
 
-    local title = string.format(L.titleFmt, enc.name or "?")
+    local bossTitle = string.format(L.titleFmt, enc.name or "?")
+    local out = {}
 
-    local segments = self:BuildSegments(raidKey, encounterKey, filter)
-    if #segments == 0 then
-        return { title .. " " .. L.noAttribs }
+    -- 1. Uncategorized bucket
+    local uncatSegs = self:BuildSegments(raidKey, encounterKey, filter, "uncategorized")
+    if #uncatSegs > 0 then
+        for _, m in ipairs(ChunkMessages(bossTitle, uncatSegs)) do
+            out[#out + 1] = m
+        end
     end
 
-    return ChunkMessages(title, segments)
+    -- 2. One block per category
+    if NS.Attributions then
+        for catId, cat in NS.Attributions:IterateCategories(raidKey, encounterKey) do
+            local catName = SanitizeChatText(cat and cat.name or "")
+            if catName == "" then catName = "?" end
+            local catTitle = string.format("[%s - %s]", enc.name or "?", catName)
+            local segs = self:BuildSegments(raidKey, encounterKey, filter, catId)
+            if #segs > 0 then
+                for _, m in ipairs(ChunkMessages(catTitle, segs)) do
+                    out[#out + 1] = m
+                end
+            end
+        end
+    end
+
+    if #out == 0 then
+        return { bossTitle .. " " .. L.noAttribs }
+    end
+    return out
 end
 
 ----------------------------------------------------------------------
